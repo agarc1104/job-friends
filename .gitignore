@@ -1,0 +1,28 @@
+.env
+venv/
+__pycache__/
+*.pyc
+build/
+*.log
+temp_diag.tex
+tmp_e2e_*.pdf
+saved_credentials.json
+monetization_events_fallback.jsonl
+mobile_app/.dart_tool/
+mobile_app/.flutter-plugins
+mobile_app/.flutter-plugins-dependencies
+mobile_app/.packages
+mobile_app/build/
+mobile_app/.idea/
+mobile_app/ios/Pods/
+mobile_app/ios/.symlinks/
+mobile_app/macos/Pods/
+
+# Web app generated artifacts
+src/node_modules/
+src/.parcel-cache/
+src/dist/
+
+# Signing keys and local Supabase temp files
+*.jks
+supabase/.temp/

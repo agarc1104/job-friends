@@ -1,0 +1,14 @@
+flet
+flet-webview
+requests
+beautifulsoup4
+supabase
+httpx
+python-dotenv
+fastapi
+uvicorn
+python-multipart
+python-docx
+reportlab
+xhtml2pdf
+htmldocx

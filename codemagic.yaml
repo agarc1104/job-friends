@@ -1,0 +1,95 @@
+workflows:
+  ios-pr-check:
+    name: iOS PR Checks
+    max_build_duration: 60
+    working_directory: mobile_app
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+    triggering:
+      events:
+        - pull_request
+      branch_patterns:
+        - pattern: "*"
+          include: true
+          source: true
+    scripts:
+      - name: Flutter pub get
+        script: |
+          flutter pub get
+      - name: Static analysis
+        script: |
+          flutter analyze
+      - name: Unit tests
+        script: |
+          flutter test
+
+  ios-testflight:
+    name: iOS TestFlight Release
+    max_build_duration: 120
+    working_directory: mobile_app
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      vars:
+        APP_ENV: production
+        BUNDLE_ID: com.jobfriends.mobile
+      groups:
+        - jobfriends_mobile_secrets
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: $BUNDLE_ID
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+    scripts:
+      - name: Validate required variables
+        script: |
+          set -euo pipefail
+
+          required_vars=(
+            SUPABASE_URL
+            SUPABASE_ANON_KEY
+            MOBILE_API_BASE_URL
+          )
+
+          for var_name in "${required_vars[@]}"; do
+            if [ -z "${!var_name:-}" ]; then
+              echo "Missing required variable: ${var_name}"
+              exit 1
+            fi
+          done
+
+      - name: Flutter pub get
+        script: |
+          flutter pub get
+
+      - name: Apply iOS provisioning profiles
+        script: |
+          xcode-project use-profiles --project ios/Runner.xcodeproj
+
+      - name: Build iOS IPA
+        script: |
+          flutter build ipa --release \
+            --build-number="$PROJECT_BUILD_NUMBER" \
+            --dart-define=APP_ENV="${APP_ENV}" \
+            --dart-define=SUPABASE_URL="${SUPABASE_URL}" \
+            --dart-define=SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY}" \
+            --dart-define=MOBILE_API_BASE_URL="${MOBILE_API_BASE_URL}" \
+            --dart-define=ADMOB_IOS_BANNER_ID="${ADMOB_IOS_BANNER_ID:-ca-app-pub-3940256099942544/2934735716}" \
+            --dart-define=ADMOB_IOS_INTERSTITIAL_ID="${ADMOB_IOS_INTERSTITIAL_ID:-ca-app-pub-3940256099942544/4411468910}"
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true

@@ -1,0 +1,13 @@
+{
+  "name": "my-app",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "parcel index.html"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.47.3"
+  },
+  "devDependencies": {
+    "buffer": "^6.0.3"
+  }
+}
