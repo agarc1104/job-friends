@@ -29,6 +29,8 @@ workflows:
     name: iOS TestFlight Release
     max_build_duration: 120
     working_directory: mobile_app
+    integrations:
+      app_store_connect: JOBFRIENDS_APP_STORE_CONNECT
     environment:
       flutter: stable
       xcode: latest
