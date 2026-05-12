@@ -23,6 +23,12 @@ class JobSearchPage {
   final String? nextPageToken;
 }
 
+typedef CvGenerationProgressCallback = void Function({
+  required String stage,
+  required double progress,
+  required String message,
+});
+
 class JobFriendsRepository {
   const JobFriendsRepository();
 
@@ -328,18 +334,38 @@ class JobFriendsRepository {
     required String email,
     required String outputFormat,
     required Map<String, String> profileData,
+    String? traceId,
+    CvGenerationProgressCallback? onProgress,
   }) async {
+    final resolvedTraceId = (traceId ?? '').trim().isEmpty
+        ? DateTime.now().microsecondsSinceEpoch.toString()
+        : traceId!.trim();
     final normalizedOutputFormat = outputFormat.trim().toLowerCase();
-    if (normalizedOutputFormat != 'docx' && normalizedOutputFormat != 'pdf') {
-      throw const JobFriendsRepositoryException('outputFormat debe ser docx o pdf.');
+    _logDebug(
+      'cv-generate-store start traceId=$resolvedTraceId email=${email.trim().toLowerCase()} '
+      'format=$normalizedOutputFormat profileKeys=${profileData.keys.toList()}',
+    );
+    if (normalizedOutputFormat != 'pdf') {
+      _logDebug('cv-generate-store invalid-format traceId=$resolvedTraceId format=$normalizedOutputFormat');
+      throw const JobFriendsRepositoryException('outputFormat debe ser pdf.');
     }
 
+    onProgress?.call(
+      stage: 'preparing_request',
+      progress: 0.2,
+      message: 'Afinando secciones clave: estamos armando la base de tu CV...',
+    );
+
     // Primary path for all environments: Supabase Edge Function (Gemini source of truth).
+    final normalizedProfileData = <String, String>{
+      ...profileData,
+      'cv_columns': 'una_columna',
+    };
     final requestBody = {
       'full_name': fullName,
       'email': email,
       'output_format': normalizedOutputFormat,
-      'profile_data': profileData,
+      'profile_data': normalizedProfileData,
     };
 
     Map<String, dynamic>? payload;
@@ -347,16 +373,35 @@ class JobFriendsRepository {
 
     for (var attempt = 0; attempt <= _cvCapacityRetryAttempts; attempt++) {
       try {
+        onProgress?.call(
+          stage: 'invoking_generation',
+          progress: 0.55,
+          message: 'Magia IA en proceso: redactando tu CV con enfoque a la vacante...',
+        );
+        _logDebug(
+          'cv-generate-store invoke start traceId=$resolvedTraceId '
+          'attempt=${attempt + 1}/${_cvCapacityRetryAttempts + 1}',
+        );
         payload = await _invokeFunction(
           'cv-generate-store',
           requestBody,
           timeout: _cvGenerationTimeout,
         );
+        _logDebug(
+          'cv-generate-store invoke success traceId=$resolvedTraceId '
+          'attempt=${attempt + 1}/${_cvCapacityRetryAttempts + 1} keys=${payload.keys.toList()}',
+        );
         break;
       } on JobFriendsRepositoryException catch (error) {
+        _logDebug(
+          'cv-generate-store invoke exception traceId=$resolvedTraceId '
+          'attempt=${attempt + 1}/${_cvCapacityRetryAttempts + 1} '
+          'reason=${error.reason} retryable=${error.retryable} message=${error.message}',
+        );
         final canRetry =
             error.retryable && error.reason == 'capacity' && attempt < _cvCapacityRetryAttempts;
         if (!canRetry) {
+          _logDebug('cv-generate-store no-retry traceId=$resolvedTraceId');
           rethrow;
         }
 
@@ -364,9 +409,14 @@ class JobFriendsRepository {
         final waitSeconds =
             (error.suggestedRetrySeconds ?? _cvCapacityRetryFallbackDelay.inSeconds)
                 .clamp(2, 12);
+        onProgress?.call(
+          stage: 'retry_wait',
+          progress: 0.6,
+          message: 'Hay fila en el generador, pero seguimos: reintentando en ${waitSeconds}s...',
+        );
         _logDebug(
-          'cv-generate-store retry attempt=${attempt + 1}/$_cvCapacityRetryAttempts '
-          'wait=${waitSeconds}s reason=${error.reason}',
+          'cv-generate-store retry traceId=$resolvedTraceId '
+          'attempt=${attempt + 1}/$_cvCapacityRetryAttempts wait=${waitSeconds}s reason=${error.reason}',
         );
         await Future<void>.delayed(Duration(seconds: waitSeconds));
       }
@@ -378,15 +428,29 @@ class JobFriendsRepository {
             'No fue posible generar el CV por alta demanda temporal. Intenta nuevamente en 1-2 minutos.',
           );
     }
+
+    onProgress?.call(
+      stage: 'processing_result',
+      progress: 0.85,
+      message: 'Ultimo sprint: validando detalles y guardando tu PDF...',
+    );
+
     final result = CvGeneratedResult.fromMap(payload);
     final generatedFormat = result.outputFormat.trim().toLowerCase();
-    if (generatedFormat != 'docx' && generatedFormat != 'pdf') {
+    if (generatedFormat != 'pdf') {
       throw JobFriendsRepositoryException(
         'La Edge Function devolvio un formato no soportado: ${result.outputFormat}.',
       );
     }
+
+    onProgress?.call(
+      stage: 'completed',
+      progress: 1,
+      message: 'Todo listo: tu CV quedo impecable y ya estamos mostrando el resultado.',
+    );
+
     debugPrint(
-      '[Telemetry] CV generado por Edge | email=${email.trim().toLowerCase()} | '
+      '[Telemetry] CV generado por Edge | traceId=$resolvedTraceId | email=${email.trim().toLowerCase()} | '
       'format=$generatedFormat | file=${result.fileName} | storage=${result.storagePath} | source=${result.source}',
     );
     return result;
@@ -513,7 +577,7 @@ class JobFriendsRepository {
       final normalizedEmail = email.trim().toLowerCase();
       final sanitizedEmail = normalizedEmail.replaceAll(RegExp(r'[^a-z0-9@._-]'), '_');
       final safeFileName = fileName.trim().replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
-      final storagePath = '${sanitizedEmail}/${DateTime.now().toUtc().millisecondsSinceEpoch}_$safeFileName';
+      final storagePath = '$sanitizedEmail/${DateTime.now().toUtc().millisecondsSinceEpoch}_$safeFileName';
       final contentType = _cvContentTypeByFileName(fileName);
 
       try {

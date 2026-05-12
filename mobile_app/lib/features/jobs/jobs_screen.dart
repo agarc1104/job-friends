@@ -12,6 +12,14 @@ import '../../data/jobfriends_repository.dart';
 import '../../models/cv_generated_result.dart';
 import '../../models/job_search_result.dart';
 import '../../models/user_profile.dart';
+import '../../theme/design_system.dart';
+
+const List<String> _quickFilterOptions = [
+  'Remoto',
+  'Tiempo completo',
+  'Junior',
+  'IA',
+];
 
 class JobsScreen extends StatefulWidget {
   const JobsScreen({
@@ -56,6 +64,7 @@ class _JobsScreenState extends State<JobsScreen> {
   String _lastRegion = '';
   String _lastCountry = '';
   String _lastCountryCode = '';
+  final Set<String> _selectedQuickFilters = <String>{};
   Timer? _prefsDebounce;
 
   void _logDebug(String message) {
@@ -137,6 +146,14 @@ class _JobsScreenState extends State<JobsScreen> {
     await prefs.setString(_prefManualCityKey, _cityController.text.trim());
     await prefs.setString(_prefManualRegionKey, _regionController.text.trim());
     await prefs.setString(_prefManualCountryKey, _countryController.text.trim());
+  }
+
+  String _buildSearchKeywords() {
+    final terms = <String>[
+      _keywordController.text.trim(),
+      ..._selectedQuickFilters,
+    ].where((value) => value.isNotEmpty);
+    return terms.join(' ');
   }
 
   String _buildExactLocation({
@@ -372,7 +389,8 @@ class _JobsScreenState extends State<JobsScreen> {
 
     _logDebug(
       'search start mode=${_useAutoLocation ? 'auto' : 'manual'} '
-      'keywords="${_keywordController.text.trim()}" '
+      'keywords="${_buildSearchKeywords()}" '
+      'filters="${_selectedQuickFilters.join(', ')}" '
       'city="$city" region="$region" country="$country" countryCode="$countryCode" '
       'exactLocation="$exactLocation"',
     );
@@ -384,7 +402,7 @@ class _JobsScreenState extends State<JobsScreen> {
 
     try {
       final page = await _repository.searchJobs(
-        keywords: _keywordController.text,
+        keywords: _buildSearchKeywords(),
         city: city,
         region: region,
         countryName: country,
@@ -396,7 +414,7 @@ class _JobsScreenState extends State<JobsScreen> {
         return;
       }
       setState(() {
-        _lastKeywords = _keywordController.text;
+        _lastKeywords = _buildSearchKeywords();
         _lastCity = city;
         _lastRegion = region;
         _lastCountry = country;
@@ -628,6 +646,15 @@ class _JobsScreenState extends State<JobsScreen> {
     required _JobCvGenerationOptions generationOptions,
     _JobCvFormData? formData,
   }) async {
+    final progressNotifier = ValueNotifier<_CvGenerationProgressState>(
+      const _CvGenerationProgressState(
+        stage: 'initial',
+        value: 0.1,
+        message: 'Calentando motores: organizando la vacante y tu perfil...',
+      ),
+    );
+    var progressDisposed = false;
+
     final profileData = _buildCvProfileDataForJob(
       job: job,
       existingCvRecord: existingCvRecord,
@@ -636,21 +663,39 @@ class _JobsScreenState extends State<JobsScreen> {
       generationOptions: generationOptions,
     );
 
-    await _showCvGenerationDialog(
-      generationFuture: _repository.generateAndStoreCv(
-        fullName: user.fullName,
-        email: user.email,
-        outputFormat: generationOptions.outputFormat,
-        profileData: profileData,
-      ),
-      job: job,
-      generationMode: generationMode,
-      selectedOutputFormat: generationOptions.outputFormat,
-    );
+    try {
+      await _showCvGenerationDialog(
+        generationFuture: _repository.generateAndStoreCv(
+          fullName: user.fullName,
+          email: user.email,
+          outputFormat: generationOptions.outputFormat,
+          profileData: profileData,
+          onProgress: ({required stage, required progress, required message}) {
+            if (progressDisposed) {
+              return;
+            }
+            final clamped = progress.clamp(0.0, 1.0).toDouble();
+            progressNotifier.value = _CvGenerationProgressState(
+              stage: stage,
+              value: clamped,
+              message: message,
+            );
+          },
+        ),
+        progress: progressNotifier,
+        job: job,
+        generationMode: generationMode,
+        selectedOutputFormat: generationOptions.outputFormat,
+      );
+    } finally {
+      progressDisposed = true;
+      progressNotifier.dispose();
+    }
   }
 
   Future<void> _showCvGenerationDialog({
     required Future<CvGeneratedResult> generationFuture,
+    required ValueListenable<_CvGenerationProgressState> progress,
     required JobSearchResult job,
     required String generationMode,
     required String selectedOutputFormat,
@@ -669,17 +714,56 @@ class _JobsScreenState extends State<JobsScreen> {
               if (snapshot.connectionState != ConnectionState.done) {
                 return AlertDialog(
                   title: Text(isAdaptingExistingCv ? 'Adaptando CV' : 'Generando CV'),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(),
-                      const SizedBox(height: 16),
-                      Text(
-                        isAdaptingExistingCv
-                            ? 'Estamos adaptando tu CV para ${job.title} en formato $outputFormatLabel. Espera un momento.'
-                            : 'Estamos generando tu CV para ${job.title} en formato $outputFormatLabel. Espera un momento.',
-                      ),
-                    ],
+                  content: ValueListenableBuilder<_CvGenerationProgressState>(
+                    valueListenable: progress,
+                    builder: (context, progressState, _) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        LinearProgressIndicator(value: progressState.value),
+                        const SizedBox(height: 12),
+                        Text(
+                          isAdaptingExistingCv
+                              ? 'Adaptando tu CV para ${job.title} en formato $outputFormatLabel.'
+                              : 'Generando tu CV para ${job.title} en formato $outputFormatLabel.',
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 280),
+                              switchInCurve: Curves.easeOut,
+                              switchOutCurve: Curves.easeIn,
+                              transitionBuilder: (child, animation) {
+                                return FadeTransition(
+                                  opacity: animation,
+                                  child: ScaleTransition(
+                                    scale: Tween<double>(begin: 0.9, end: 1.0).animate(animation),
+                                    child: child,
+                                  ),
+                                );
+                              },
+                              child: Icon(
+                                _iconForCvGenerationStage(progressState.stage),
+                                key: ValueKey(progressState.stage),
+                                size: 16,
+                                color: AppColors.primaryActive,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                progressState.message,
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppColors.secondaryText,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 );
               }
@@ -737,6 +821,24 @@ class _JobsScreenState extends State<JobsScreen> {
         );
       },
     );
+  }
+
+  IconData _iconForCvGenerationStage(String stage) {
+    switch (stage) {
+      case 'preparing_request':
+      case 'initial':
+        return Icons.rocket_launch_rounded;
+      case 'invoking_generation':
+        return Icons.auto_awesome_rounded;
+      case 'retry_wait':
+        return Icons.hourglass_top_rounded;
+      case 'processing_result':
+        return Icons.description_rounded;
+      case 'completed':
+        return Icons.verified_rounded;
+      default:
+        return Icons.tune_rounded;
+    }
   }
 
   Future<void> _openGeneratedCvUrl(CvGeneratedResult generated) async {
@@ -867,10 +969,10 @@ class _JobsScreenState extends State<JobsScreen> {
       text: existingProfileData?['achievements']?.toString() ?? '',
     );
 
-    var outputFormat = 'docx';
+    var outputFormat = 'pdf';
     var colorPalette = existingProfileData?['cv_color_palette']?.toString() ?? 'azul_profesional';
     var fontSize = existingProfileData?['cv_font_size']?.toString() ?? 'estandar';
-    var columns = existingProfileData?['cv_columns']?.toString() ?? 'una_columna';
+    var columns = 'una_columna';
 
     final result = await showDialog<_JobCvFormData>(
       context: context,
@@ -878,7 +980,7 @@ class _JobsScreenState extends State<JobsScreen> {
         builder: (dialogContext, setDialogState) => AlertDialog(
           title: Text('Nuevo CV para ${job.title}'),
           content: SizedBox(
-            width: 520,
+            width: MediaQuery.of(dialogContext).size.width * 0.9,
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -954,24 +1056,12 @@ class _JobsScreenState extends State<JobsScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: outputFormat,
+                  InputDecorator(
                     decoration: const InputDecoration(
                       labelText: 'Formato de salida',
                       border: OutlineInputBorder(),
                     ),
-                    items: const [
-                      DropdownMenuItem(value: 'docx', child: Text('DOCX')),
-                      DropdownMenuItem(value: 'pdf', child: Text('PDF')),
-                    ],
-                    onChanged: (value) {
-                      if (value == null) {
-                        return;
-                      }
-                      setDialogState(() {
-                        outputFormat = value;
-                      });
-                    },
+                    child: const Text('PDF'),
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
@@ -1016,24 +1106,12 @@ class _JobsScreenState extends State<JobsScreen> {
                     },
                   ),
                   const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: columns,
+                  InputDecorator(
                     decoration: const InputDecoration(
                       labelText: 'Distribucion',
                       border: OutlineInputBorder(),
                     ),
-                    items: const [
-                      DropdownMenuItem(value: 'una_columna', child: Text('1 columna')),
-                      DropdownMenuItem(value: 'dos_columnas', child: Text('2 columnas')),
-                    ],
-                    onChanged: (value) {
-                      if (value == null) {
-                        return;
-                      }
-                      setDialogState(() {
-                        columns = value;
-                      });
-                    },
+                    child: const Text('1 columna'),
                   ),
                 ],
               ),
@@ -1068,15 +1146,6 @@ class _JobsScreenState extends State<JobsScreen> {
       ),
     );
 
-    targetRolesController.dispose();
-    summaryController.dispose();
-    experienceController.dispose();
-    educationController.dispose();
-    skillsController.dispose();
-    languagesController.dispose();
-    certificationsController.dispose();
-    achievementsController.dispose();
-
     return result;
   }
 
@@ -1107,12 +1176,13 @@ class _JobsScreenState extends State<JobsScreen> {
   @override
   Widget build(BuildContext context) {
     final hasMorePages = (_nextPageToken ?? '').isNotEmpty;
-    final totalItems = _results.length + 1 + (hasMorePages ? 1 : 0);
+    final showEmptyState = !_isSearching && _results.isEmpty;
+    final totalItems = 1 + (showEmptyState ? 1 : 0) + _results.length + (hasMorePages ? 1 : 0);
 
     return ListView.separated(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(AppSpacing.md),
       itemCount: totalItems,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.sm),
       itemBuilder: (context, index) {
         if (index == 0) {
           return _SearchHeader(
@@ -1129,6 +1199,16 @@ class _JobsScreenState extends State<JobsScreen> {
             detectedCity: _detectedCity,
             detectedRegion: _detectedRegion,
             detectedCountry: _detectedCountry,
+            selectedQuickFilters: _selectedQuickFilters,
+            onQuickFilterToggled: (filter) {
+              setState(() {
+                if (_selectedQuickFilters.contains(filter)) {
+                  _selectedQuickFilters.remove(filter);
+                } else {
+                  _selectedQuickFilters.add(filter);
+                }
+              });
+            },
             onUseAutoLocationChanged: (value) {
               setState(() {
                 _useAutoLocation = value;
@@ -1141,6 +1221,14 @@ class _JobsScreenState extends State<JobsScreen> {
           );
         }
 
+        if (showEmptyState && index == 1) {
+          return _JobsEmptyState(
+            isSearching: _isSearching,
+            selectedQuickFilters: _selectedQuickFilters,
+          );
+        }
+
+        final resultsOffset = showEmptyState ? 2 : 1;
         if (hasMorePages && index == totalItems - 1) {
           return _LoadMoreFooter(
             isLoading: _isLoadingMore,
@@ -1148,7 +1236,7 @@ class _JobsScreenState extends State<JobsScreen> {
           );
         }
 
-        final job = _results[index - 1];
+        final job = _results[index - resultsOffset];
         return _JobCard(
           job: job,
           onViewDetails: () => _openJobDetails(job),
@@ -1182,6 +1270,18 @@ class _JobCvGenerationOptions {
   final String colorPalette;
   final String fontSize;
   final String columns;
+}
+
+class _CvGenerationProgressState {
+  const _CvGenerationProgressState({
+    required this.stage,
+    required this.value,
+    required this.message,
+  });
+
+  final String stage;
+  final double value;
+  final String message;
 }
 
 class _JobCvFormData {
@@ -1226,16 +1326,82 @@ class _LoadMoreFooter extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Center(
-      child: OutlinedButton.icon(
-        onPressed: isLoading ? null : () => onLoadMore(),
-        icon: isLoading
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.expand_more_rounded),
-        label: Text(isLoading ? 'Cargando mas...' : 'Cargar mas resultados'),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+        child: OutlinedButton.icon(
+          onPressed: isLoading ? null : () => onLoadMore(),
+          icon: isLoading
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.expand_more_rounded),
+          label: Text(isLoading ? 'Cargando mas...' : 'Cargar mas resultados'),
+        ),
+      ),
+    );
+  }
+}
+
+class _JobsEmptyState extends StatelessWidget {
+  const _JobsEmptyState({
+    required this.isSearching,
+    required this.selectedQuickFilters,
+  });
+
+  final bool isSearching;
+  final Set<String> selectedQuickFilters;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: AppColors.softGreen,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: const Icon(Icons.work_outline_rounded, color: AppColors.primaryActive),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Text(
+              isSearching ? 'Buscando vacantes' : 'Aun no hay resultados',
+              style: Theme.of(context).textTheme.headlineMedium,
+            ),
+            const SizedBox(height: AppSpacing.xxs),
+            Text(
+              isSearching
+                  ? 'Estamos consultando las vacantes disponibles con tus filtros.'
+                  : 'Prueba otra palabra clave, quita filtros o cambia la ubicacion para ver mas opciones.',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.secondaryText,
+                  ),
+            ),
+            if (selectedQuickFilters.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.sm),
+              Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: selectedQuickFilters
+                    .map(
+                      (filter) => Chip(
+                        label: Text(filter),
+                        backgroundColor: AppColors.softGreen,
+                        side: const BorderSide(color: AppColors.softGreenBorder),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -1256,6 +1422,8 @@ class _SearchHeader extends StatelessWidget {
     required this.detectedCity,
     required this.detectedRegion,
     required this.detectedCountry,
+    required this.selectedQuickFilters,
+    required this.onQuickFilterToggled,
     required this.onUseAutoLocationChanged,
   });
 
@@ -1272,26 +1440,67 @@ class _SearchHeader extends StatelessWidget {
   final String? detectedCity;
   final String? detectedRegion;
   final String? detectedCountry;
+  final Set<String> selectedQuickFilters;
+  final ValueChanged<String> onQuickFilterToggled;
   final ValueChanged<bool> onUseAutoLocationChanged;
 
   @override
   Widget build(BuildContext context) {
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(AppSpacing.md),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text(
+              'Buscar',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: AppSpacing.md),
             TextField(
               controller: keywordController,
               textInputAction: TextInputAction.search,
               onSubmitted: isSaving ? null : (_) => onSearch(),
               decoration: InputDecoration(
-                labelText: 'Palabras clave',
-                border: OutlineInputBorder(),
+                hintText: 'Buscar empleos...',
+                prefixIcon: const Icon(Icons.search_rounded),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.sm),
+            Wrap(
+              spacing: AppSpacing.xs,
+              runSpacing: AppSpacing.xs,
+              children: _quickFilterOptions.map((filter) {
+                final isSelected = selectedQuickFilters.contains(filter);
+                return FilterChip(
+                  label: Text(filter),
+                  selected: isSelected,
+                  showCheckmark: false,
+                  selectedColor: AppColors.primary,
+                  backgroundColor: AppColors.surface,
+                  side: BorderSide(
+                    color: isSelected ? AppColors.primary : AppColors.softSurfaceBorder,
+                  ),
+                  labelStyle: TextStyle(
+                    color: isSelected ? Colors.white : AppColors.navy,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  onSelected: isSaving ? null : (_) => onQuickFilterToggled(filter),
+                );
+              }).toList(),
+            ),
+            if (selectedQuickFilters.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.xs),
+              Text(
+                'Filtros activos: ${selectedQuickFilters.join(' • ')}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.primaryActive,
+                    ),
+              ),
+            ],
+            const SizedBox(height: AppSpacing.sm),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
               title: const Text('Usar mi ubicacion actual'),
@@ -1309,31 +1518,29 @@ class _SearchHeader extends StatelessWidget {
               onChanged: isSaving ? null : onUseAutoLocationChanged,
             ),
             if (!useAutoLocation) ...[
+              const SizedBox(height: AppSpacing.xs),
               TextField(
                 controller: cityController,
                 decoration: const InputDecoration(
                   labelText: 'Ciudad (opcional)',
-                  border: OutlineInputBorder(),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.sm),
               TextField(
                 controller: regionController,
                 decoration: const InputDecoration(
                   labelText: 'Estado / Provincia / Region (opcional)',
-                  border: OutlineInputBorder(),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.sm),
               TextField(
                 controller: countryController,
                 decoration: const InputDecoration(
                   labelText: 'Pais (opcional)',
-                  border: OutlineInputBorder(),
                 ),
               ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: AppSpacing.md),
             FilledButton.icon(
               onPressed: isSaving ? null : () => onSearch(),
               icon: const Icon(Icons.travel_explore_rounded),
@@ -1364,40 +1571,134 @@ class _JobCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              job.title,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-            const SizedBox(height: 6),
-            Text('${job.company} · ${job.location}'),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: onViewDetails,
-                    child: const Text('Ver detalles'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: onApply,
-                    child: const Text('Aplicar y guardar'),
-                  ),
-                ),
-              ],
-            ),
-          ],
+    return InkWell(
+      borderRadius: BorderRadius.circular(AppRadii.md),
+      onTap: onViewDetails,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadii.md),
+          border: Border.all(color: AppColors.softSurfaceBorder),
+          boxShadow: AppShadows.card,
         ),
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          job.company,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          job.title,
+                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          job.location,
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: AppColors.secondaryText,
+                              ),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        Text(
+                          job.summary,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: AppColors.secondaryText,
+                                height: 1.35,
+                              ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: onApply,
+                    icon: const Icon(Icons.bookmark_add_outlined),
+                    color: AppColors.primaryActive,
+                    tooltip: 'Guardar vacante',
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Wrap(
+                spacing: AppSpacing.xs,
+                runSpacing: AppSpacing.xs,
+                children: [
+                  _JobMetaChip(label: job.location, icon: Icons.place_outlined),
+                  _JobMetaChip(label: 'Vacante activa', icon: Icons.bolt_outlined),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: onViewDetails,
+                      child: const Text('Ver detalles'),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.sm),
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: onApply,
+                      child: const Text('Aplicar'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _JobMetaChip extends StatelessWidget {
+  const _JobMetaChip({
+    required this.label,
+    required this.icon,
+  });
+
+  final String label;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.softGreen,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.softGreenBorder),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: AppColors.primaryActive),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: AppColors.primaryActive,
+                ),
+          ),
+        ],
       ),
     );
   }
@@ -1424,42 +1725,46 @@ class _JobDetailsScreen extends StatelessWidget {
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(AppSpacing.md),
           child: Card(
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     job.title,
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.xxs),
                   Text(
                     job.company,
-                    style: Theme.of(context).textTheme.titleMedium,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: AppColors.secondaryText,
+                        ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     job.location,
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.secondaryText,
+                        ),
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: AppSpacing.md),
                   Text(
                     'Descripcion completa',
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.xxs),
                   SelectableText(
                     fullDescription,
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: AppSpacing.md),
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
