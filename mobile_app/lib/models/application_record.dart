@@ -6,6 +6,7 @@ class ApplicationRecord {
     required this.status,
     required this.applicationLink,
     required this.description,
+    this.createdAt,
   });
 
   final String id;
@@ -14,6 +15,15 @@ class ApplicationRecord {
   final String status;
   final String applicationLink;
   final String description;
+  final DateTime? createdAt;
+
+  bool get isOlderThanThreeMonths {
+    final created = createdAt;
+    if (created == null) {
+      return false;
+    }
+    return DateTime.now().toUtc().difference(created.toUtc()) > const Duration(days: 90);
+  }
 
   factory ApplicationRecord.fromMap(Map<String, dynamic> data) {
     return ApplicationRecord(
@@ -23,6 +33,7 @@ class ApplicationRecord {
       status: (data['status'] ?? 'Aplicado').toString(),
       applicationLink: (data['application_link'] ?? '').toString(),
       description: (data['Description'] ?? '').toString(),
+      createdAt: DateTime.tryParse((data['added_at'] ?? '').toString()),
     );
   }
 }

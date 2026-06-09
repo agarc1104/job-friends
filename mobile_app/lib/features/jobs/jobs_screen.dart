@@ -9,6 +9,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../data/jobfriends_repository.dart';
+import '../ads/rewarded_interstitial_ads_service.dart';
+import '../../l10n/localized_text.dart';
 import '../../models/cv_generated_result.dart';
 import '../../models/job_search_result.dart';
 import '../../models/user_profile.dart';
@@ -44,6 +46,7 @@ class _JobsScreenState extends State<JobsScreen> {
   static const _prefManualCountryKey = 'jobs.manual_country';
 
   final _repository = const JobFriendsRepository();
+  final _rewardedInterstitialAds = RewardedInterstitialAdsService.instance;
   final _keywordController = TextEditingController();
   final _cityController = TextEditingController();
   final _regionController = TextEditingController();
@@ -77,6 +80,7 @@ class _JobsScreenState extends State<JobsScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_rewardedInterstitialAds.preload());
     _cityController.addListener(_onManualLocationChanged);
     _regionController.addListener(_onManualLocationChanged);
     _countryController.addListener(_onManualLocationChanged);
@@ -240,7 +244,7 @@ class _JobsScreenState extends State<JobsScreen> {
       return '';
     }
 
-    var cleaned = _stripDiacritics(firstSegment)
+    var cleaned = firstSegment
         .replaceAll('.', ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
@@ -249,6 +253,60 @@ class _JobsScreenState extends State<JobsScreen> {
     cleaned = cleaned.replaceAll(RegExp(r'\bD\s*C\b', caseSensitive: false), '').trim();
     cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ').trim();
     return cleaned;
+  }
+
+  String _resolveHlFromGl(String gl) {
+    switch (gl) {
+      case 'co':
+      case 'mx':
+      case 'ar':
+      case 'cl':
+      case 'pe':
+      case 'ec':
+      case 'uy':
+      case 'py':
+      case 'bo':
+      case 've':
+      case 'es':
+        return 'es';
+      case 'br':
+        return 'pt';
+      default:
+        return 'en';
+    }
+  }
+
+  String _resolveGoogleDomainFromGl(String gl) {
+    switch (gl) {
+      case 'co':
+        return 'google.com.co';
+      case 'mx':
+        return 'google.com.mx';
+      case 'ar':
+        return 'google.com.ar';
+      case 'cl':
+        return 'google.cl';
+      case 'pe':
+        return 'google.com.pe';
+      case 'ec':
+        return 'google.com.ec';
+      case 'uy':
+        return 'google.com.uy';
+      case 'py':
+        return 'google.com.py';
+      case 'bo':
+        return 'google.com.bo';
+      case 've':
+        return 'google.co.ve';
+      case 'es':
+        return 'google.es';
+      case 'br':
+        return 'google.com.br';
+      case 'us':
+        return 'google.com';
+      default:
+        return 'google.com';
+    }
   }
 
   void _onManualLocationChanged() {
@@ -265,6 +323,11 @@ class _JobsScreenState extends State<JobsScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  String _tr(String key, {Map<String, String> args = const {}}) {
+    final languageCode = languageCodeFromLocale(PlatformDispatcher.instance.locale);
+    return trByCode(languageCode, key, fallback: key, args: args);
+  }
+
   Future<bool> _resolveCurrentLocation() async {
     if (_isResolvingLocation) {
       return false;
@@ -277,7 +340,7 @@ class _JobsScreenState extends State<JobsScreen> {
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _showMessage('Activa el GPS para detectar tu ubicacion.');
+        _showMessage(_tr('jobs.enableGps'));
         return false;
       }
 
@@ -287,13 +350,13 @@ class _JobsScreenState extends State<JobsScreen> {
       }
 
       if (permission == LocationPermission.denied) {
-        _showMessage('No se concedio permiso de ubicacion.');
+        _showMessage(_tr('jobs.locationPermissionDenied'));
         return false;
       }
 
       if (permission == LocationPermission.deniedForever) {
         _showMessage(
-          'El permiso de ubicacion esta bloqueado. Habilitalo desde configuracion.',
+          _tr('jobs.locationPermissionBlocked'),
         );
         return false;
       }
@@ -308,7 +371,7 @@ class _JobsScreenState extends State<JobsScreen> {
       );
 
       if (placemarks.isEmpty) {
-        _showMessage('No se pudo resolver ciudad/pais desde tu ubicacion.');
+        _showMessage(_tr('jobs.couldNotResolveCityCountry'));
         return false;
       }
 
@@ -345,7 +408,7 @@ class _JobsScreenState extends State<JobsScreen> {
       return city.isNotEmpty || country.isNotEmpty;
     } catch (_) {
       _logDebug('auto location resolve failed');
-      _showMessage('No fue posible detectar tu ubicacion actual.');
+      _showMessage(_tr('jobs.couldNotDetectLocation'));
       return false;
     } finally {
       if (mounted) {
@@ -370,6 +433,10 @@ class _JobsScreenState extends State<JobsScreen> {
       if (!hasDetectedLocation) {
         await _resolveCurrentLocation();
       }
+      if ((_detectedCity ?? '').trim().isEmpty && (_detectedCountry ?? '').trim().isEmpty) {
+        _showMessage(_tr('jobs.locationRequiredToSearch'));
+        return;
+      }
       city = _detectedCity ?? '';
       region = _detectedRegion ?? '';
       country = _detectedCountry ?? '';
@@ -386,13 +453,16 @@ class _JobsScreenState extends State<JobsScreen> {
       region: region,
       country: country,
     );
+    final glValue = countryCode.trim().toLowerCase();
+    final hlValue = glValue.isNotEmpty ? _resolveHlFromGl(glValue) : '';
+    final googleDomainValue = glValue.isNotEmpty ? _resolveGoogleDomainFromGl(glValue) : '';
 
     _logDebug(
       'search start mode=${_useAutoLocation ? 'auto' : 'manual'} '
       'keywords="${_buildSearchKeywords()}" '
       'filters="${_selectedQuickFilters.join(', ')}" '
       'city="$city" region="$region" country="$country" countryCode="$countryCode" '
-      'exactLocation="$exactLocation"',
+      'exactLocation="$exactLocation" gl="$glValue" hl="$hlValue" domain="$googleDomainValue"',
     );
 
     setState(() {
@@ -401,6 +471,11 @@ class _JobsScreenState extends State<JobsScreen> {
     });
 
     try {
+      await _rewardedInterstitialAds.maybeShow(
+        placement: 'search_before_results',
+        userEmail: widget.currentUser?.email,
+      );
+
       final page = await _repository.searchJobs(
         keywords: _buildSearchKeywords(),
         city: city,
@@ -408,6 +483,10 @@ class _JobsScreenState extends State<JobsScreen> {
         countryName: country,
         countryCode: countryCode,
         location: exactLocation,
+        hl: hlValue,
+        gl: glValue,
+        googleDomain: googleDomainValue,
+        userEmail: widget.currentUser?.email,
       );
       unawaited(_persistSearchPreferences());
       if (!mounted) {
@@ -439,7 +518,7 @@ class _JobsScreenState extends State<JobsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo consultar el endpoint de vacantes.')),
+        SnackBar(content: Text(tr(context, 'jobs.couldNotQueryEndpoint'))),
       );
     } finally {
       if (mounted) {
@@ -462,6 +541,11 @@ class _JobsScreenState extends State<JobsScreen> {
 
     try {
       _logDebug('load more start tokenPrefix=${token.substring(0, token.length > 16 ? 16 : token.length)}');
+      await _rewardedInterstitialAds.maybeShow(
+        placement: 'search_before_results',
+        userEmail: widget.currentUser?.email,
+      );
+
       final page = await _repository.searchJobs(
         keywords: _lastKeywords,
         city: _lastCity,
@@ -473,7 +557,11 @@ class _JobsScreenState extends State<JobsScreen> {
           region: _lastRegion,
           country: _lastCountry,
         ),
+        hl: _lastCountryCode.isNotEmpty ? _resolveHlFromGl(_lastCountryCode) : '',
+        gl: _lastCountryCode,
+        googleDomain: _lastCountryCode.isNotEmpty ? _resolveGoogleDomainFromGl(_lastCountryCode) : '',
         nextPageToken: token,
+        userEmail: widget.currentUser?.email,
       );
 
       if (!mounted) {
@@ -493,7 +581,7 @@ class _JobsScreenState extends State<JobsScreen> {
       _showMessage(error.message);
     } catch (_) {
       _logDebug('load more unexpected error');
-      _showMessage('No se pudo cargar la siguiente pagina de resultados.');
+      _showMessage(tr(context, 'jobs.couldNotLoadNextPage'));
     } finally {
       if (mounted) {
         setState(() {
@@ -507,7 +595,7 @@ class _JobsScreenState extends State<JobsScreen> {
     final currentUser = widget.currentUser;
     if (currentUser == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesion antes de aplicar.')),
+        SnackBar(content: Text(tr(context, 'jobs.signInBeforeApply'))),
       );
       return;
     }
@@ -529,7 +617,7 @@ class _JobsScreenState extends State<JobsScreen> {
       }
       widget.onApplyRecorded();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Aplicacion guardada para ${job.title}.')),
+        SnackBar(content: Text(tr(context, 'jobs.applicationSavedFor', args: {'title': job.title}))),
       );
 
       await _promptCvGenerationSuggestion(
@@ -550,7 +638,7 @@ class _JobsScreenState extends State<JobsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo guardar la aplicacion en Supabase.')),
+        SnackBar(content: Text(tr(context, 'jobs.couldNotSaveSupabase'))),
       );
     } finally {
       if (mounted) {
@@ -572,10 +660,12 @@ class _JobsScreenState extends State<JobsScreen> {
     }
 
     final hasSavedCv = cvRecord != null;
-    final title = hasSavedCv ? 'Prepara tu CV para esta vacante' : 'Crea tu CV para esta vacante';
+    final title = hasSavedCv
+        ? tr(context, 'jobs.prepareCvForVacancy')
+        : tr(context, 'jobs.createCvForVacancy');
     final description = hasSavedCv
-      ? 'Detectamos un CV guardado. Debes revisar el formulario antes de generar con Gemini. Puedes adaptar y reemplazar tu CV, o crear uno nuevo desde el formulario.'
-        : 'No encontramos un CV guardado. Puedes crear uno nuevo desde el formulario de CV para ${job.title} en ${job.company}.';
+      ? tr(context, 'jobs.detectedSavedCv')
+        : tr(context, 'jobs.noSavedCvForRole', args: {'title': job.title, 'company': job.company});
 
     final action = await showDialog<String>(
       context: context,
@@ -585,23 +675,23 @@ class _JobsScreenState extends State<JobsScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Ahora no'),
+            child: Text(tr(context, 'jobs.notNow')),
           ),
           if (hasSavedCv)
             OutlinedButton(
               onPressed: () => Navigator.of(dialogContext).pop('adapt_existing_form'),
-              child: const Text('Adaptar CV desde formulario'),
+              child: Text(tr(context, 'jobs.adaptCvFromForm')),
             ),
           if (hasSavedCv)
             OutlinedButton(
               onPressed: () => Navigator.of(dialogContext).pop('new_from_form'),
-              child: const Text('Nuevo CV desde formulario'),
+              child: Text(tr(context, 'jobs.newCvFromForm')),
             ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(
               hasSavedCv ? 'adapt_existing_form' : 'new_from_form',
             ),
-            child: Text(hasSavedCv ? 'Revisar formulario y adaptar' : 'Crear CV desde formulario'),
+            child: Text(hasSavedCv ? tr(context, 'jobs.reviewAndAdapt') : tr(context, 'jobs.createCvFromForm')),
           ),
         ],
       ),
@@ -664,6 +754,11 @@ class _JobsScreenState extends State<JobsScreen> {
     );
 
     try {
+      await _rewardedInterstitialAds.maybeShow(
+        placement: 'cv_before_generation',
+        userEmail: user.email,
+      );
+
       await _showCvGenerationDialog(
         generationFuture: _repository.generateAndStoreCv(
           fullName: user.fullName,
@@ -713,7 +808,7 @@ class _JobsScreenState extends State<JobsScreen> {
               final outputFormatLabel = selectedOutputFormat.toUpperCase();
               if (snapshot.connectionState != ConnectionState.done) {
                 return AlertDialog(
-                  title: Text(isAdaptingExistingCv ? 'Adaptando CV' : 'Generando CV'),
+                  title: Text(isAdaptingExistingCv ? tr(context, 'jobs.adaptingCv') : tr(context, 'jobs.generatingCv')),
                   content: ValueListenableBuilder<_CvGenerationProgressState>(
                     valueListenable: progress,
                     builder: (context, progressState, _) => Column(
@@ -724,8 +819,8 @@ class _JobsScreenState extends State<JobsScreen> {
                         const SizedBox(height: 12),
                         Text(
                           isAdaptingExistingCv
-                              ? 'Adaptando tu CV para ${job.title} en formato $outputFormatLabel.'
-                              : 'Generando tu CV para ${job.title} en formato $outputFormatLabel.',
+                              ? tr(context, 'jobs.adaptingCvForRole', args: {'title': job.title, 'format': outputFormatLabel})
+                              : tr(context, 'jobs.generatingCvForRole', args: {'title': job.title, 'format': outputFormatLabel}),
                         ),
                         const SizedBox(height: 8),
                         Row(
@@ -772,14 +867,14 @@ class _JobsScreenState extends State<JobsScreen> {
                 final error = snapshot.error;
                 final message = error is JobFriendsRepositoryException
                     ? error.message
-                    : 'No se pudo generar el CV para esta vacante.';
+                    : tr(context, 'jobs.couldNotGenerateCvForRole');
                 return AlertDialog(
-                  title: const Text('No se pudo generar el CV'),
+                  title: Text(tr(context, 'jobs.couldNotGenerateCv')),
                   content: Text(message),
                   actions: [
                     FilledButton(
                       onPressed: () => Navigator.of(dialogContext).pop(),
-                      child: const Text('Continuar a la vacante'),
+                      child: Text(tr(context, 'jobs.continueToVacancy')),
                     ),
                   ],
                 );
@@ -787,13 +882,13 @@ class _JobsScreenState extends State<JobsScreen> {
 
               final generated = snapshot.data!;
               return AlertDialog(
-                title: Text(isAdaptingExistingCv ? 'CV adaptado' : 'CV generado'),
+                title: Text(isAdaptingExistingCv ? tr(context, 'jobs.cvAdapted') : tr(context, 'jobs.cvGenerated')),
                 content: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Tu CV para ${job.title} en formato $outputFormatLabel ya esta listo y guardado en el sistema.',
+                      tr(context, 'jobs.cvReadyForRole', args: {'title': job.title, 'format': outputFormatLabel}),
                     ),
                     const SizedBox(height: 12),
                     Text(
@@ -808,11 +903,11 @@ class _JobsScreenState extends State<JobsScreen> {
                   OutlinedButton.icon(
                     onPressed: () => _openGeneratedCvUrl(generated),
                     icon: const Icon(Icons.download_rounded),
-                    label: const Text('Descargar CV'),
+                    label: Text(tr(context, 'jobs.downloadCv')),
                   ),
                   FilledButton(
                     onPressed: () => Navigator.of(dialogContext).pop(),
-                    child: const Text('Continuar a la vacante'),
+                    child: Text(tr(context, 'jobs.continueToVacancy')),
                   ),
                 ],
               );
@@ -844,13 +939,13 @@ class _JobsScreenState extends State<JobsScreen> {
   Future<void> _openGeneratedCvUrl(CvGeneratedResult generated) async {
     final uri = Uri.tryParse(generated.publicUrl);
     if (uri == null) {
-      _showMessage('La URL del CV generado no es valida.');
+      _showMessage(tr(context, 'jobs.invalidGeneratedCvUrl'));
       return;
     }
 
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
-      _showMessage('No se pudo abrir el CV generado.');
+      _showMessage(tr(context, 'jobs.couldNotOpenGeneratedCv'));
     }
   }
 
@@ -978,7 +1073,7 @@ class _JobsScreenState extends State<JobsScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (dialogContext, setDialogState) => AlertDialog(
-          title: Text('Nuevo CV para ${job.title}'),
+          title: Text(tr(dialogContext, 'jobs.newCvForRole', args: {'title': job.title})),
           content: SizedBox(
             width: MediaQuery.of(dialogContext).size.width * 0.9,
             child: SingleChildScrollView(
@@ -987,8 +1082,8 @@ class _JobsScreenState extends State<JobsScreen> {
                 children: [
                   TextField(
                     controller: targetRolesController,
-                    decoration: const InputDecoration(
-                      labelText: 'Vacantes objetivo',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.targetRoles'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -996,8 +1091,8 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: summaryController,
                     maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Resumen profesional',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.professionalSummary'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1005,8 +1100,8 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: experienceController,
                     maxLines: 4,
-                    decoration: const InputDecoration(
-                      labelText: 'Experiencia',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.experience'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1014,8 +1109,8 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: educationController,
                     maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Educacion',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.education'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1023,8 +1118,8 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: skillsController,
                     maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Habilidades',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.skills'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1032,8 +1127,8 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: languagesController,
                     maxLines: 2,
-                    decoration: const InputDecoration(
-                      labelText: 'Idiomas',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.languages'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1041,8 +1136,8 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: certificationsController,
                     maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Certificaciones',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.certifications'),
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -1050,30 +1145,30 @@ class _JobsScreenState extends State<JobsScreen> {
                   TextField(
                     controller: achievementsController,
                     maxLines: 3,
-                    decoration: const InputDecoration(
-                      labelText: 'Logros',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.achievements'),
                       border: OutlineInputBorder(),
                     ),
                   ),
                   const SizedBox(height: 12),
                   InputDecorator(
-                    decoration: const InputDecoration(
-                      labelText: 'Formato de salida',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.outputFormat'),
                       border: OutlineInputBorder(),
                     ),
-                    child: const Text('PDF'),
+                    child: Text(tr(dialogContext, 'cv.pdf')),
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     initialValue: colorPalette,
-                    decoration: const InputDecoration(
-                      labelText: 'Paleta visual',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.colorPalette'),
                       border: OutlineInputBorder(),
                     ),
-                    items: const [
-                      DropdownMenuItem(value: 'azul_profesional', child: Text('Azul profesional')),
-                      DropdownMenuItem(value: 'verde_moderno', child: Text('Verde moderno')),
-                      DropdownMenuItem(value: 'gris_ejecutivo', child: Text('Gris ejecutivo')),
+                    items: [
+                      DropdownMenuItem(value: 'azul_profesional', child: Text(tr(dialogContext, 'cv.palette.blueProfessional'))),
+                      DropdownMenuItem(value: 'verde_moderno', child: Text(tr(dialogContext, 'cv.palette.modernGreen'))),
+                      DropdownMenuItem(value: 'gris_ejecutivo', child: Text(tr(dialogContext, 'cv.palette.executiveGray'))),
                     ],
                     onChanged: (value) {
                       if (value == null) {
@@ -1087,14 +1182,14 @@ class _JobsScreenState extends State<JobsScreen> {
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(
                     initialValue: fontSize,
-                    decoration: const InputDecoration(
-                      labelText: 'Tamano de letra',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.fontSize'),
                       border: OutlineInputBorder(),
                     ),
-                    items: const [
-                      DropdownMenuItem(value: 'compacta', child: Text('Compacta')),
-                      DropdownMenuItem(value: 'estandar', child: Text('Estandar')),
-                      DropdownMenuItem(value: 'amplia', child: Text('Amplia')),
+                    items: [
+                      DropdownMenuItem(value: 'compacta', child: Text(tr(dialogContext, 'cv.font.compact'))),
+                      DropdownMenuItem(value: 'estandar', child: Text(tr(dialogContext, 'cv.font.standard'))),
+                      DropdownMenuItem(value: 'amplia', child: Text(tr(dialogContext, 'cv.font.wide'))),
                     ],
                     onChanged: (value) {
                       if (value == null) {
@@ -1107,11 +1202,11 @@ class _JobsScreenState extends State<JobsScreen> {
                   ),
                   const SizedBox(height: 12),
                   InputDecorator(
-                    decoration: const InputDecoration(
-                      labelText: 'Distribucion',
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.layout'),
                       border: OutlineInputBorder(),
                     ),
-                    child: const Text('1 columna'),
+                    child: Text(tr(dialogContext, 'cv.oneColumn')),
                   ),
                 ],
               ),
@@ -1120,7 +1215,7 @@ class _JobsScreenState extends State<JobsScreen> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cancelar'),
+              child: Text(tr(dialogContext, 'common.cancel')),
             ),
             FilledButton(
               onPressed: () => Navigator.of(dialogContext).pop(
@@ -1139,7 +1234,7 @@ class _JobsScreenState extends State<JobsScreen> {
                   columns: columns,
                 ),
               ),
-              child: const Text('Generar y guardar'),
+              child: Text(tr(dialogContext, 'jobs.generateAndSave')),
             ),
           ],
         ),
@@ -1155,7 +1250,7 @@ class _JobsScreenState extends State<JobsScreen> {
     final hasHttpScheme = uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
 
     if (rawUrl.isEmpty || rawUrl == '#' || !hasHttpScheme) {
-      _showMessage('La vacante no tiene un enlace valido para aplicar.');
+      _showMessage(tr(context, 'jobs.vacancyHasNoValidLink'));
       return;
     }
 
@@ -1337,7 +1432,7 @@ class _LoadMoreFooter extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.expand_more_rounded),
-          label: Text(isLoading ? 'Cargando mas...' : 'Cargar mas resultados'),
+          label: Text(isLoading ? tr(context, 'jobs.loadingMore') : tr(context, 'jobs.loadMoreResults')),
         ),
       ),
     );
@@ -1372,14 +1467,14 @@ class _JobsEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.md),
             Text(
-              isSearching ? 'Buscando vacantes' : 'Aun no hay resultados',
+              isSearching ? tr(context, 'jobs.searchingVacancies') : tr(context, 'jobs.noResultsYet'),
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: AppSpacing.xxs),
             Text(
               isSearching
-                  ? 'Estamos consultando las vacantes disponibles con tus filtros.'
-                  : 'Prueba otra palabra clave, quita filtros o cambia la ubicacion para ver mas opciones.',
+                  ? tr(context, 'jobs.searchingWithFilters')
+                  : tr(context, 'jobs.tryAnotherKeyword'),
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: AppColors.secondaryText,
                   ),
@@ -1453,7 +1548,7 @@ class _SearchHeader extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Buscar',
+              tr(context, 'nav.search'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleLarge,
@@ -1464,7 +1559,7 @@ class _SearchHeader extends StatelessWidget {
               textInputAction: TextInputAction.search,
               onSubmitted: isSaving ? null : (_) => onSearch(),
               decoration: InputDecoration(
-                hintText: 'Buscar empleos...',
+                hintText: tr(context, 'jobs.searchJobsHint'),
                 prefixIcon: const Icon(Icons.search_rounded),
               ),
             ),
@@ -1494,7 +1589,7 @@ class _SearchHeader extends StatelessWidget {
             if (selectedQuickFilters.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.xs),
               Text(
-                'Filtros activos: ${selectedQuickFilters.join(' • ')}',
+                tr(context, 'jobs.activeFilters', args: {'filters': selectedQuickFilters.join(' • ')}),
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: AppColors.primaryActive,
                     ),
@@ -1503,16 +1598,16 @@ class _SearchHeader extends StatelessWidget {
             const SizedBox(height: AppSpacing.sm),
             SwitchListTile.adaptive(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Usar mi ubicacion actual'),
+              title: Text(tr(context, 'jobs.useCurrentLocation')),
               subtitle: Text(
                 useAutoLocation
                     ? (isResolvingLocation
-                        ? 'Detectando ubicacion...'
+                        ? tr(context, 'jobs.detectingLocation')
                         : ((detectedCity ?? '').trim().isNotEmpty ||
                                 (detectedCountry ?? '').trim().isNotEmpty
-                            ? 'Buscando en ${[(detectedCity ?? '').trim(), (detectedRegion ?? '').trim(), (detectedCountry ?? '').trim()].where((value) => value.isNotEmpty).join(', ')}'
-                            : 'Detectaremos tu ciudad/pais al entrar a esta seccion'))
-                    : 'Configura ciudad y pais manualmente',
+                            ? tr(context, 'jobs.searchingIn', args: {'location': [(detectedCity ?? '').trim(), (detectedRegion ?? '').trim(), (detectedCountry ?? '').trim()].where((value) => value.isNotEmpty).join(', ')})
+                            : tr(context, 'jobs.detectWhenEnteringSection')))
+                    : tr(context, 'jobs.configureCityCountryManually'),
               ),
               value: useAutoLocation,
               onChanged: isSaving ? null : onUseAutoLocationChanged,
@@ -1521,22 +1616,22 @@ class _SearchHeader extends StatelessWidget {
               const SizedBox(height: AppSpacing.xs),
               TextField(
                 controller: cityController,
-                decoration: const InputDecoration(
-                  labelText: 'Ciudad (opcional)',
+                decoration: InputDecoration(
+                  labelText: tr(context, 'jobs.cityOptional'),
                 ),
               ),
               const SizedBox(height: AppSpacing.sm),
               TextField(
                 controller: regionController,
-                decoration: const InputDecoration(
-                  labelText: 'Estado / Provincia / Region (opcional)',
+                decoration: InputDecoration(
+                  labelText: tr(context, 'jobs.regionOptional'),
                 ),
               ),
               const SizedBox(height: AppSpacing.sm),
               TextField(
                 controller: countryController,
-                decoration: const InputDecoration(
-                  labelText: 'Pais (opcional)',
+                decoration: InputDecoration(
+                  labelText: tr(context, 'jobs.countryOptional'),
                 ),
               ),
             ],
@@ -1544,12 +1639,12 @@ class _SearchHeader extends StatelessWidget {
             FilledButton.icon(
               onPressed: isSaving ? null : () => onSearch(),
               icon: const Icon(Icons.travel_explore_rounded),
-              label: Text(isSaving ? 'Buscando...' : 'Buscar'),
+              label: Text(isSaving ? tr(context, 'jobs.searching') : tr(context, 'nav.search')),
             ),
             if (hasResults)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: Text('Resultados cargados desde el endpoint backend.'),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(tr(context, 'jobs.resultsLoadedFromBackend')),
               ),
           ],
         ),
@@ -1630,7 +1725,7 @@ class _JobCard extends StatelessWidget {
                     onPressed: onApply,
                     icon: const Icon(Icons.bookmark_add_outlined),
                     color: AppColors.primaryActive,
-                    tooltip: 'Guardar vacante',
+                    tooltip: tr(context, 'jobs.saveVacancy'),
                   ),
                 ],
               ),
@@ -1640,7 +1735,7 @@ class _JobCard extends StatelessWidget {
                 runSpacing: AppSpacing.xs,
                 children: [
                   _JobMetaChip(label: job.location, icon: Icons.place_outlined),
-                  _JobMetaChip(label: 'Vacante activa', icon: Icons.bolt_outlined),
+                  _JobMetaChip(label: tr(context, 'jobs.activeVacancy'), icon: Icons.bolt_outlined),
                 ],
               ),
               const SizedBox(height: AppSpacing.md),
@@ -1649,14 +1744,14 @@ class _JobCard extends StatelessWidget {
                   Expanded(
                     child: OutlinedButton(
                       onPressed: onViewDetails,
-                      child: const Text('Ver detalles'),
+                      child: Text(tr(context, 'jobs.viewDetails')),
                     ),
                   ),
                   const SizedBox(width: AppSpacing.sm),
                   Expanded(
                     child: FilledButton(
                       onPressed: onApply,
-                      child: const Text('Aplicar'),
+                      child: Text(tr(context, 'jobs.apply')),
                     ),
                   ),
                 ],
@@ -1717,11 +1812,11 @@ class _JobDetailsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final fullDescription = job.summary.trim().isNotEmpty
         ? job.summary.trim()
-        : 'Sin descripcion disponible para esta vacante.';
+      : tr(context, 'applications.noDescription');
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Detalle de vacante'),
+        title: Text(tr(context, 'jobs.vacancyDetails')),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -1754,7 +1849,7 @@ class _JobDetailsScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: AppSpacing.md),
                   Text(
-                    'Descripcion completa',
+                    tr(context, 'jobs.fullDescription'),
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
@@ -1770,7 +1865,7 @@ class _JobDetailsScreen extends StatelessWidget {
                     child: FilledButton.icon(
                       onPressed: onApply == null ? null : () => onApply!(),
                       icon: const Icon(Icons.check_circle_outline),
-                      label: const Text('Aplicar y guardar'),
+                      label: Text(tr(context, 'jobs.applyAndSave')),
                     ),
                   ),
                 ],
@@ -1839,7 +1934,7 @@ class _JobApplyWebViewScreenState extends State<_JobApplyWebViewScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final titleText = widget.jobTitle.trim().isNotEmpty ? widget.jobTitle.trim() : 'Postulacion';
+    final titleText = widget.jobTitle.trim().isNotEmpty ? widget.jobTitle.trim() : tr(context, 'jobs.application');
 
     return Scaffold(
       appBar: AppBar(
@@ -1858,7 +1953,7 @@ class _JobApplyWebViewScreenState extends State<_JobApplyWebViewScreen> {
               Padding(
                 padding: const EdgeInsets.all(12),
                 child: Text(
-                  'No se pudo cargar la pagina: $_errorMessage',
+                  tr(context, 'jobs.couldNotLoadPage', args: {'error': '$_errorMessage'}),
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
               ),

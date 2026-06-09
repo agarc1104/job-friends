@@ -19,10 +19,19 @@ Future<void> main() async {
   await AppConfig.initialize(envFile: envFile);
 
   if (AppConfig.hasSupabaseConfig) {
-    await Supabase.initialize(
-      url: AppConfig.supabaseUrl,
-      anonKey: AppConfig.supabaseAnonKey,
-    );
+    try {
+      await Supabase.initialize(
+        url: AppConfig.supabaseUrl,
+        anonKey: AppConfig.supabaseAnonKey,
+      );
+    } catch (error) {
+      debugPrint('[ERROR] Supabase initialization failed: $error');
+      rethrow;
+    }
+  } else {
+    final errorMsg = 'FATAL: Supabase no configurado. Verifica que .env.${appEnv.toLowerCase()} tenga SUPABASE_URL y SUPABASE_ANON_KEY.';
+    debugPrint('[FATAL] $errorMsg');
+    throw Exception(errorMsg);
   }
 
   if (AppConfig.supportsMobileAds) {

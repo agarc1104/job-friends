@@ -1,4 +1,4 @@
-export interface GeminiCallOptions {
+export interface DeepSeekCallOptions {
   prompt: string;
   temperature: number;
   maxOutputTokens: number;
@@ -6,13 +6,13 @@ export interface GeminiCallOptions {
   requiredSubstrings?: string[];
 }
 
-function logGeminiTrace(stage: string, detail: Record<string, unknown> = {}): void {
+function logDeepSeekTrace(stage: string, detail: Record<string, unknown> = {}): void {
   const payload = {
     ts: new Date().toISOString(),
     stage,
     ...detail,
   };
-  console.log(`[GEMINI_TRACE] ${JSON.stringify(payload)}`);
+  console.log(`[DEEPSEEK_TRACE] ${JSON.stringify(payload)}`);
 }
 
 function parseModelList(value: string | undefined): string[] {
@@ -23,27 +23,43 @@ function parseModelList(value: string | undefined): string[] {
     .filter((item) => item.length > 0);
 }
 
-function parseGeminiText(data: unknown): string {
+function parseDeepSeekText(data: unknown): string {
   const json = data as Record<string, unknown>;
-  const candidates = json["candidates"] as Array<Record<string, unknown>> | undefined;
-  if (!candidates || candidates.length === 0) {
+  const choices = json["choices"] as Array<Record<string, unknown>> | undefined;
+  if (!choices || choices.length === 0) {
     return "";
   }
 
-  // Gemini can split output across multiple parts and return multiple candidates.
-  // Choose the longest non-empty candidate to reduce partial/truncated outputs.
+  // Choose the longest non-empty answer across choices to reduce partial outputs.
   let bestText = "";
-  for (const candidate of candidates) {
-    const content = candidate["content"] as Record<string, unknown> | undefined;
-    const parts = content?.["parts"] as Array<Record<string, unknown>> | undefined;
-    if (!parts || parts.length === 0) {
+  for (const choice of choices) {
+    const message = choice["message"] as Record<string, unknown> | undefined;
+    if (!message) {
       continue;
     }
 
-    const text = parts
-      .map((part) => (part?.["text"] as string | undefined) ?? "")
-      .join("")
-      .trim();
+    const content = message["content"];
+    const text = (() => {
+      if (typeof content === "string") {
+        return content.trim();
+      }
+
+      if (Array.isArray(content)) {
+        return content
+          .map((part) => {
+            if (!part || typeof part !== "object") {
+              return "";
+            }
+            const record = part as Record<string, unknown>;
+            const partText = record["text"];
+            return typeof partText === "string" ? partText : "";
+          })
+          .join("")
+          .trim();
+      }
+
+      return "";
+    })();
 
     if (text.length > bestText.length) {
       bestText = text;
@@ -51,6 +67,19 @@ function parseGeminiText(data: unknown): string {
   }
 
   return bestText;
+}
+
+function extractDeepSeekErrorDetail(data: unknown): string {
+  if (!data || typeof data !== "object") {
+    return "";
+  }
+  const json = data as Record<string, unknown>;
+  const error = json["error"] as Record<string, unknown> | undefined;
+  if (!error) {
+    return "";
+  }
+  const message = error["message"];
+  return typeof message === "string" ? message.trim() : "";
 }
 
 function buildCompletionPrompt(originalPrompt: string, partialText: string): string {
@@ -64,23 +93,26 @@ function buildCompletionPrompt(originalPrompt: string, partialText: string): str
   );
 }
 
-export async function callGeminiWithFallback(options: GeminiCallOptions): Promise<string> {
-  const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
-  const primaryModel = Deno.env.get("GEMINI_MODEL") ?? "gemini-2.5-flash";
+export async function callDeepSeekWithFallback(options: DeepSeekCallOptions): Promise<string> {
+  const deepSeekApiKey = Deno.env.get("DEEPSEEK_API_KEY");
+  const primaryModel = Deno.env.get("DEEPSEEK_MODEL") ?? "deepseek-chat";
   const fallbackModels = parseModelList(
-    Deno.env.get("GEMINI_FALLBACK_MODELS") ?? "gemini-2.5-flash-lite,gemini-2.0-flash,gemini-flash-latest",
+    Deno.env.get("DEEPSEEK_FALLBACK_MODELS") ?? "",
   );
+  const baseUrl = (Deno.env.get("DEEPSEEK_API_BASE_URL") ?? "https://api.deepseek.com").replace(/\/+$/, "");
+  const url = `${baseUrl}/chat/completions`;
 
-  if (!geminiApiKey) {
-    throw new Error("GEMINI_API_KEY no configurada en Supabase Secrets.");
+  if (!deepSeekApiKey) {
+    throw new Error("DEEPSEEK_API_KEY no configurada en Supabase Secrets.");
   }
 
   const models = [primaryModel, ...fallbackModels.filter((m) => m !== primaryModel)];
   const maxRounds = 2;
 
-  logGeminiTrace("call.start", {
+  logDeepSeekTrace("call.start", {
     modelPrimary: primaryModel,
     models,
+    url,
     temperature: options.temperature,
     maxOutputTokens: options.maxOutputTokens,
     minOutputLength: options.minOutputLength ?? 0,
@@ -92,39 +124,36 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
 
   let lastError = "";
   for (let round = 1; round <= maxRounds; round++) {
-    logGeminiTrace("call.round.start", { round, maxRounds });
+    logDeepSeekTrace("call.round.start", { round, maxRounds });
 
     for (const model of models) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
-      logGeminiTrace("call.attempt.request", {
+      const requestBody = {
+        model,
+        messages: [{ role: "user", content: options.prompt }],
+        temperature: options.temperature,
+        max_tokens: options.maxOutputTokens,
+      };
+
+      logDeepSeekTrace("call.attempt.request", {
         model,
         round,
-        urlWithoutKey: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        requestBody: {
-          contents: [{ parts: [{ text: options.prompt }] }],
-          generationConfig: {
-            temperature: options.temperature,
-            maxOutputTokens: options.maxOutputTokens,
-          },
-        },
+        url,
+        requestBody,
       });
 
       const response = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: options.prompt }] }],
-          generationConfig: {
-            temperature: options.temperature,
-            maxOutputTokens: options.maxOutputTokens,
-          },
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${deepSeekApiKey}`,
+        },
+        body: JSON.stringify(requestBody),
       });
 
       if (response.ok) {
         const data = await response.json();
-        const text = parseGeminiText(data);
-        logGeminiTrace("call.attempt.response_ok", {
+        const text = parseDeepSeekText(data);
+        logDeepSeekTrace("call.attempt.response_ok", {
           model,
           round,
           textLength: text.length,
@@ -141,7 +170,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
             lastError =
               `Modelo ${model} devolvio salida insuficiente (length=${text.length}, min=${minOutputLength}, ` +
               `missing=${missingSubstrings.join("|") || "none"}).`;
-            logGeminiTrace("call.attempt.output_rejected", {
+            logDeepSeekTrace("call.attempt.output_rejected", {
               model,
               round,
               textLength: text.length,
@@ -154,33 +183,37 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
             // If output looks like partial LaTeX, ask the same model once for a full regeneration.
             if (text.includes("\\documentclass") && missingSubstrings.length > 0) {
               const completionPrompt = buildCompletionPrompt(options.prompt, text);
-              logGeminiTrace("call.attempt.completion_retry.request", {
+              logDeepSeekTrace("call.attempt.completion_retry.request", {
                 model,
                 round,
                 missingSubstrings,
                 completionPromptLength: completionPrompt.length,
               });
 
+              const completionBody = {
+                model,
+                messages: [{ role: "user", content: completionPrompt }],
+                temperature: 0.0,
+                max_tokens: options.maxOutputTokens,
+              };
+
               const completionResponse = await fetch(url, {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  contents: [{ parts: [{ text: completionPrompt }] }],
-                  generationConfig: {
-                    temperature: 0.0,
-                    maxOutputTokens: options.maxOutputTokens,
-                  },
-                }),
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${deepSeekApiKey}`,
+                },
+                body: JSON.stringify(completionBody),
               });
 
               if (completionResponse.ok) {
                 const completionData = await completionResponse.json();
-                const completionText = parseGeminiText(completionData);
+                const completionText = parseDeepSeekText(completionData);
                 const completionMissing = requiredSubstrings.filter((item) => !completionText.includes(item));
                 const completionMeetsLength = completionText.length >= minOutputLength;
                 const completionMeetsSubstrings = completionMissing.length === 0;
 
-                logGeminiTrace("call.attempt.completion_retry.response_ok", {
+                logDeepSeekTrace("call.attempt.completion_retry.response_ok", {
                   model,
                   round,
                   textLength: completionText.length,
@@ -189,7 +222,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
                 });
 
                 if (completionText.trim().length > 0 && completionMeetsLength && completionMeetsSubstrings) {
-                  logGeminiTrace("call.success", {
+                  logDeepSeekTrace("call.success", {
                     model,
                     round,
                     strategy: "completion_retry",
@@ -199,7 +232,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
                 }
               } else {
                 const completionDetail = await completionResponse.text();
-                logGeminiTrace("call.attempt.completion_retry.response_error", {
+                logDeepSeekTrace("call.attempt.completion_retry.response_error", {
                   model,
                   round,
                   status: completionResponse.status,
@@ -210,7 +243,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
             continue;
           }
 
-          logGeminiTrace("call.success", {
+          logDeepSeekTrace("call.success", {
             model,
             round,
             textLength: text.length,
@@ -218,16 +251,17 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
           return text;
         }
         lastError = `Modelo ${model} respondio sin texto util.`;
-        logGeminiTrace("call.attempt.empty_text", {
+        logDeepSeekTrace("call.attempt.empty_text", {
           model,
           round,
         });
         continue;
       }
 
-      const detail = await response.text();
+      const responseData = await response.json().catch(() => ({}));
+      const detail = extractDeepSeekErrorDetail(responseData) || JSON.stringify(responseData);
       lastError = `Modelo ${model} fallo con HTTP ${response.status}: ${detail}`;
-      logGeminiTrace("call.attempt.response_error", {
+      logDeepSeekTrace("call.attempt.response_error", {
         model,
         round,
         status: response.status,
@@ -236,7 +270,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
 
       // Continue to next fallback for transient and availability issues.
       if (response.status === 429 || response.status === 500 || response.status === 502 || response.status === 503 || response.status === 504) {
-        logGeminiTrace("call.attempt.retryable_error", {
+        logDeepSeekTrace("call.attempt.retryable_error", {
           model,
           round,
           status: response.status,
@@ -248,7 +282,7 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
       throw new Error(lastError);
     }
 
-    logGeminiTrace("call.round.end", {
+    logDeepSeekTrace("call.round.end", {
       round,
       maxRounds,
       lastError,
@@ -260,9 +294,12 @@ export async function callGeminiWithFallback(options: GeminiCallOptions): Promis
     }
   }
 
-  logGeminiTrace("call.failed_all_models", {
+  logDeepSeekTrace("call.failed_all_models", {
     lastError,
   });
 
-  throw new Error(lastError || "No fue posible obtener respuesta de Gemini.");
+  throw new Error(lastError || "No fue posible obtener respuesta de DeepSeek.");
 }
+
+// Temporary alias to reduce churn while callers are migrated.
+export const callGeminiWithFallback = callDeepSeekWithFallback;

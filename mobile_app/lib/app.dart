@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
-import 'features/shell/home_shell.dart';
+import 'l10n/app_localizations.dart';
+
+import 'features/onboarding/onboarding_gate.dart';
 import 'theme/app_theme.dart';
 
 class JobFriendsApp extends StatelessWidget {
@@ -9,10 +11,12 @@ class JobFriendsApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'JobFriends Mobile',
+      onGenerateTitle: (context) => AppLocalizations.of(context).appTitle,
       debugShowCheckedModeBanner: false,
       theme: buildJobFriendsTheme(),
-      home: const HomeShell(),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      home: const OnboardingGate(),
     );
   }
 }

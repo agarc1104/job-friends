@@ -85,7 +85,8 @@ workflows:
             --dart-define=SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY}" \
             --dart-define=MOBILE_API_BASE_URL="${MOBILE_API_BASE_URL}" \
             --dart-define=ADMOB_IOS_BANNER_ID="${ADMOB_IOS_BANNER_ID:-ca-app-pub-3940256099942544/2934735716}" \
-            --dart-define=ADMOB_IOS_INTERSTITIAL_ID="${ADMOB_IOS_INTERSTITIAL_ID:-ca-app-pub-3940256099942544/4411468910}"
+            --dart-define=ADMOB_IOS_INTERSTITIAL_ID="${ADMOB_IOS_INTERSTITIAL_ID:-ca-app-pub-3940256099942544/4411468910}" \
+            --dart-define=ADMOB_IOS_REWARDED_INTERSTITIAL_ID="${ADMOB_IOS_REWARDED_INTERSTITIAL_ID:-ca-app-pub-6063446543539696/7936881094}"
 
     artifacts:
       - build/ios/ipa/*.ipa

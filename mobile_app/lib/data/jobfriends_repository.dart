@@ -10,6 +10,10 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/app_config.dart';
 import '../models/application_record.dart';
 import '../models/cv_generated_result.dart';
+import '../models/interview_coach_reply.dart';
+import '../models/interview_message.dart';
+import '../models/interview_practice_mode.dart';
+import '../models/interview_session.dart';
 import '../models/job_search_result.dart';
 import '../models/user_profile.dart';
 
@@ -39,6 +43,8 @@ class JobFriendsRepository {
   static const String _companyInterestLeadsTable = 'company_interest_leads';
   static const String _cvBucket = 'applicant-cvs';
   static const String _cvMetadataTable = 'ApplicantCVs';
+  static const String _interviewSessionsTable = 'interview_sessions';
+  static const String _interviewMessagesTable = 'interview_messages';
 
   void _logDebug(String message) {
     if (!kDebugMode) {
@@ -137,15 +143,64 @@ class JobFriendsRepository {
 
   Future<List<ApplicationRecord>> fetchApplications(String email) async {
     final normalizedEmail = email.trim().toLowerCase();
+    _logDebug('fetchApplications start applicantEmail="$normalizedEmail"');
     final response = await _client
         .from('Applications')
-        .select('id, website, vaccancy, status, application_link, Description')
+      .select('id, website, vaccancy, status, application_link, Description, added_at')
         .eq('applicant_email', normalizedEmail)
         .order('id', ascending: false);
 
-    return response
+    final applications = response
         .map<ApplicationRecord>((item) => ApplicationRecord.fromMap(item))
         .toList();
+    _logDebug(
+      'fetchApplications success applicantEmail="$normalizedEmail" count=${applications.length}',
+    );
+    return applications;
+  }
+
+  Future<ApplicationRecord?> fetchApplicationById({
+    required String applicantEmail,
+    required String applicationId,
+  }) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    _logDebug(
+      'fetchApplicationById start applicantEmail="$normalizedEmail" applicationId=$applicationId',
+    );
+    try {
+      final response = await _client
+          .from('Applications')
+          .select('id, website, vaccancy, status, application_link, Description, added_at')
+          .eq('applicant_email', normalizedEmail)
+          .eq('id', applicationId)
+          .maybeSingle();
+
+      if (response == null) {
+        _logDebug(
+          'fetchApplicationById none found applicantEmail="$normalizedEmail" applicationId=$applicationId',
+        );
+        return null;
+      }
+
+      final application = ApplicationRecord.fromMap(response);
+      _logDebug(
+        'fetchApplicationById success applicantEmail="$normalizedEmail" applicationId=$applicationId createdAt=${application.createdAt?.toIso8601String() ?? 'null'}',
+      );
+      return application;
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return null;
+      }
+      _logDebug(
+        'fetchApplicationById error applicantEmail="$normalizedEmail" applicationId=$applicationId code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      return null;
+    } catch (error) {
+      _logDebug(
+        'fetchApplicationById unexpected error applicantEmail="$normalizedEmail" applicationId=$applicationId error=$error',
+      );
+      return null;
+    }
   }
 
   Future<void> saveApplication({
@@ -222,6 +277,33 @@ class JobFriendsRepository {
     }
   }
 
+  Future<List<CvGeneratedResult>> fetchAllApplicantCvs(String applicantEmail) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+
+    try {
+      final response = await _client
+          .from('ApplicantCVs')
+          .select('file_name, storage_path, public_url, source, output_format, updated_at')
+          .eq('applicant_email', normalizedEmail)
+          .order('updated_at', ascending: false);
+
+      final results = <CvGeneratedResult>[];
+      for (final item in response) {
+        results.add(CvGeneratedResult.fromMap(item));
+      }
+      return results;
+    } on PostgrestException catch (error) {
+      _logDebug(
+        'fetchAllApplicantCvs error applicantEmail="$normalizedEmail" '
+        'code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      return [];
+    } catch (_) {
+      _logDebug('fetchAllApplicantCvs unexpected error applicantEmail="$normalizedEmail"');
+      return [];
+    }
+  }
+
   Future<void> updateApplicationStatus({
     required String applicationId,
     required String status,
@@ -248,6 +330,35 @@ class JobFriendsRepository {
     }
   }
 
+  Future<void> deleteInterviewDataForApplication({
+    required String applicantEmail,
+    required String applicationId,
+  }) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    _logDebug(
+      'deleteInterviewDataForApplication start applicantEmail="$normalizedEmail" applicationId=$applicationId',
+    );
+    try {
+      await _client
+          .from(_interviewSessionsTable)
+          .delete()
+          .eq('applicant_email', normalizedEmail)
+          .eq('application_id', applicationId);
+      _logDebug(
+        'deleteInterviewDataForApplication success applicantEmail="$normalizedEmail" applicationId=$applicationId',
+      );
+    } on PostgrestException catch (error) {
+      _logDebug(
+        'deleteInterviewDataForApplication error applicantEmail="$normalizedEmail" applicationId=$applicationId '
+        'code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+    } catch (error) {
+      _logDebug(
+        'deleteInterviewDataForApplication unexpected error applicantEmail="$normalizedEmail" applicationId=$applicationId error=$error',
+      );
+    }
+  }
+
   Future<JobSearchPage> searchJobs({
     required String keywords,
     String city = '',
@@ -259,14 +370,13 @@ class JobFriendsRepository {
     String? gl,
     String? googleDomain,
     String? nextPageToken,
+    String? userEmail,
   }) async {
-    final locale = PlatformDispatcher.instance.locale;
     final languageCode = (hl ?? '').trim().toLowerCase();
-    final regionCode = (gl ?? countryCode).trim().toLowerCase().isNotEmpty
-        ? (gl ?? countryCode).trim().toLowerCase()
-        : (locale.countryCode?.trim().toLowerCase() ?? '');
+    final regionCode = (gl ?? countryCode).trim().toLowerCase();
     final sanitizedCountryCode = countryCode.trim().toLowerCase();
     final sanitizedGoogleDomain = googleDomain?.trim().toLowerCase() ?? '';
+    final sanitizedUserEmail = userEmail?.trim().toLowerCase() ?? '';
 
     final requestBody = <String, dynamic>{
       'keywords': keywords,
@@ -279,6 +389,7 @@ class JobFriendsRepository {
       if (regionCode.isNotEmpty) 'gl': regionCode,
       if (sanitizedGoogleDomain.isNotEmpty) 'google_domain': sanitizedGoogleDomain,
       if ((nextPageToken ?? '').trim().isNotEmpty) 'next_page_token': nextPageToken,
+      if (sanitizedUserEmail.isNotEmpty) 'user_email': sanitizedUserEmail,
     };
 
     _logDebug('search-jobs requestBody=${jsonEncode(requestBody)}');
@@ -317,6 +428,8 @@ class JobFriendsRepository {
     required String skills,
     required String summary,
   }) async {
+    final locale = PlatformDispatcher.instance.locale;
+    final languageCode = _resolveSupportedLanguageCode(locale.languageCode);
     final payload = await _invokeFunction('cv-assist', {
       'full_name': fullName,
       'email': email,
@@ -325,6 +438,8 @@ class JobFriendsRepository {
       'education': education,
       'skills': skills,
       'summary': summary,
+      'language_code': languageCode,
+      'locale': locale.toLanguageTag(),
     });
     return payload['suggestion']?.toString() ?? '';
   }
@@ -337,6 +452,8 @@ class JobFriendsRepository {
     String? traceId,
     CvGenerationProgressCallback? onProgress,
   }) async {
+    final locale = PlatformDispatcher.instance.locale;
+    final languageCode = _resolveSupportedLanguageCode(locale.languageCode);
     final resolvedTraceId = (traceId ?? '').trim().isEmpty
         ? DateTime.now().microsecondsSinceEpoch.toString()
         : traceId!.trim();
@@ -366,6 +483,8 @@ class JobFriendsRepository {
       'email': email,
       'output_format': normalizedOutputFormat,
       'profile_data': normalizedProfileData,
+      'language_code': languageCode,
+      'locale': locale.toLanguageTag(),
     };
 
     Map<String, dynamic>? payload;
@@ -456,21 +575,304 @@ class JobFriendsRepository {
     return result;
   }
 
-  Future<String> requestInterviewReply({
+  Future<InterviewCoachReply> requestInterviewReply({
     required String jobTitle,
     required String jobDescription,
     required String applicationLink,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
     required String userMessage,
+    required InterviewPracticeMode mode,
+    String sessionSummary = '',
+    String bootstrapPrompt = '',
   }) async {
+    final locale = PlatformDispatcher.instance.locale;
+    final languageCode = _resolveSupportedLanguageCode(locale.languageCode);
+    _logDebug(
+      'requestInterviewReply start jobTitle="${jobTitle.trim()}" mode=${mode.key} '
+      'historyCount=${history.length} messageLength=${userMessage.length} summaryLength=${sessionSummary.length}',
+    );
     final payload = await _invokeFunction('interview-reply', {
       'job_title': jobTitle,
       'job_description': jobDescription,
       'application_link': applicationLink,
       'history': history,
       'user_message': userMessage,
+      'mode': mode.key,
+      'session_summary': sessionSummary,
+      'bootstrap_prompt': bootstrapPrompt,
+      'language_code': languageCode,
+      'locale': locale.toLanguageTag(),
     });
-    return payload['reply']?.toString() ?? '';
+    final reply = InterviewCoachReply.fromMap(payload);
+    _logDebug(
+      'requestInterviewReply success replyLength=${reply.reply.length} '
+      'score=${reply.score?.toString() ?? '(none)'} tags=${reply.tags.join('|')}',
+    );
+    return reply;
+  }
+
+  String _resolveSupportedLanguageCode(String? rawLanguageCode) {
+    final normalized = (rawLanguageCode ?? '').trim().toLowerCase();
+    switch (normalized) {
+      case 'es':
+      case 'en':
+      case 'pt':
+      case 'fr':
+      case 'de':
+      case 'it':
+        return normalized;
+      default:
+        return 'en';
+    }
+  }
+
+  Future<InterviewSession?> fetchLatestInterviewSession({
+    required String applicantEmail,
+    required String applicationId,
+    required InterviewPracticeMode mode,
+  }) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    _logDebug(
+      'fetchLatestInterviewSession start applicantEmail="$normalizedEmail" '
+      'applicationId=$applicationId mode=${mode.key}',
+    );
+
+    try {
+      final response = await _client
+          .from(_interviewSessionsTable)
+          .select('id, applicant_email, application_id, mode, status, created_at, updated_at, last_summary')
+          .eq('applicant_email', normalizedEmail)
+          .eq('application_id', applicationId)
+          .eq('mode', mode.key)
+          .order('updated_at', ascending: false)
+          .limit(1)
+          .maybeSingle();
+
+      if (response == null) {
+        _logDebug('fetchLatestInterviewSession none found applicantEmail="$normalizedEmail"');
+        return null;
+      }
+
+      final session = InterviewSession.fromMap(response);
+      _logDebug(
+        'fetchLatestInterviewSession success sessionId=${session.id} updatedAt=${session.updatedAt.toIso8601String()}',
+      );
+      return session;
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return null;
+      }
+      _logDebug(
+        'fetchLatestInterviewSession error code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      return null;
+    } catch (error) {
+      _logDebug('fetchLatestInterviewSession unexpected error=$error');
+      return null;
+    }
+  }
+
+  Future<InterviewSession?> createInterviewSession({
+    required String applicantEmail,
+    required String applicationId,
+    required InterviewPracticeMode mode,
+  }) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    _logDebug(
+      'createInterviewSession start applicantEmail="$normalizedEmail" applicationId=$applicationId mode=${mode.key}',
+    );
+
+    try {
+      final response = await _client
+          .from(_interviewSessionsTable)
+          .insert({
+            'applicant_email': normalizedEmail,
+            'application_id': applicationId,
+            'mode': mode.key,
+            'status': 'active',
+            'last_summary': '',
+          })
+          .select('id, applicant_email, application_id, mode, status, created_at, updated_at, last_summary')
+          .single();
+
+      final session = InterviewSession.fromMap(response);
+      _logDebug('createInterviewSession success sessionId=${session.id}');
+      return session;
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return null;
+      }
+      if ((error.code ?? '').toLowerCase() == '23505') {
+        _logDebug('createInterviewSession conflict detected, reloading existing session');
+        return fetchLatestInterviewSession(
+          applicantEmail: normalizedEmail,
+          applicationId: applicationId,
+          mode: mode,
+        );
+      }
+      throw JobFriendsRepositoryException(
+        'No se pudo crear sesion de entrevista (${error.code ?? 'sin-codigo'}): ${error.message}',
+      );
+    }
+  }
+
+  Future<List<InterviewSession>> fetchInterviewSessions({
+    required String applicantEmail,
+    int limit = 50,
+  }) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    _logDebug(
+      'fetchInterviewSessions start applicantEmail="$normalizedEmail" limit=$limit',
+    );
+    try {
+      final response = await _client
+          .from(_interviewSessionsTable)
+          .select('id, applicant_email, application_id, mode, status, created_at, updated_at, last_summary')
+          .eq('applicant_email', normalizedEmail)
+          .order('updated_at', ascending: false)
+          .limit(limit);
+
+      final sessions = response
+          .map<InterviewSession>((item) => InterviewSession.fromMap(item))
+          .toList();
+      _logDebug('fetchInterviewSessions success applicantEmail="$normalizedEmail" count=${sessions.length}');
+      return sessions;
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return const [];
+      }
+      _logDebug(
+        'fetchInterviewSessions error applicantEmail="$normalizedEmail" code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      return const [];
+    } catch (error) {
+      _logDebug('fetchInterviewSessions unexpected error applicantEmail="$normalizedEmail" error=$error');
+      return const [];
+    }
+  }
+
+  Future<void> archiveActiveInterviewSession({
+    required String applicantEmail,
+    required String applicationId,
+    required InterviewPracticeMode mode,
+  }) async {
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    _logDebug(
+      'archiveActiveInterviewSession start applicantEmail="$normalizedEmail" applicationId=$applicationId mode=${mode.key}',
+    );
+    try {
+      await _client
+          .from(_interviewSessionsTable)
+          .update({
+            'status': 'archived',
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('applicant_email', normalizedEmail)
+          .eq('application_id', applicationId)
+          .eq('mode', mode.key)
+          .eq('status', 'active');
+      _logDebug(
+        'archiveActiveInterviewSession success applicantEmail="$normalizedEmail" applicationId=$applicationId mode=${mode.key}',
+      );
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return;
+      }
+      _logDebug(
+        'archiveActiveInterviewSession error applicantEmail="$normalizedEmail" applicationId=$applicationId mode=${mode.key} '
+        'code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+    } catch (error) {
+      _logDebug(
+        'archiveActiveInterviewSession unexpected error applicantEmail="$normalizedEmail" applicationId=$applicationId mode=${mode.key} error=$error',
+      );
+    }
+  }
+
+  Future<void> updateInterviewSessionSummary({
+    required String sessionId,
+    required String summary,
+  }) async {
+    try {
+      await _client.from(_interviewSessionsTable).update({
+        'last_summary': summary,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', sessionId);
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return;
+      }
+      _logDebug(
+        'updateInterviewSessionSummary error sessionId=$sessionId code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+    }
+  }
+
+  Future<List<InterviewMessage>> fetchInterviewMessages({
+    required String sessionId,
+    int limit = 60,
+  }) async {
+    _logDebug('fetchInterviewMessages start sessionId=$sessionId limit=$limit');
+    try {
+      final response = await _client
+          .from(_interviewMessagesTable)
+          .select(
+            'role, content, created_at, coach_feedback, improved_answer, next_question, score, tags, session_summary',
+          )
+          .eq('session_id', sessionId)
+          .order('created_at', ascending: true)
+          .limit(limit);
+
+        final messages = response
+          .map<InterviewMessage>((item) => InterviewMessage.fromDatabaseMap(item))
+          .toList();
+        _logDebug('fetchInterviewMessages success sessionId=$sessionId count=${messages.length}');
+        return messages;
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return const [];
+      }
+      _logDebug(
+        'fetchInterviewMessages error sessionId=$sessionId code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      return const [];
+    } catch (error) {
+      _logDebug('fetchInterviewMessages unexpected error sessionId=$sessionId error=$error');
+      return const [];
+    }
+  }
+
+  Future<void> saveInterviewMessage({
+    required InterviewMessage message,
+    required String sessionId,
+    required String applicantEmail,
+    required String applicationId,
+    required InterviewPracticeMode mode,
+  }) async {
+    _logDebug(
+      'saveInterviewMessage start sessionId=$sessionId role=${message.role} '
+      'contentLength=${message.content.length}',
+    );
+    try {
+      await _client.from(_interviewMessagesTable).insert(
+            message.toDatabaseMap(
+              sessionId: sessionId,
+              applicantEmail: applicantEmail,
+              applicationId: applicationId,
+              mode: mode,
+            ),
+          );
+          _logDebug('saveInterviewMessage success sessionId=$sessionId role=${message.role}');
+    } on PostgrestException catch (error) {
+      if ((error.code ?? '').toLowerCase() == 'pgrst205') {
+        return;
+      }
+      _logDebug(
+        'saveInterviewMessage error sessionId=$sessionId code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+    } catch (error) {
+      _logDebug('saveInterviewMessage unexpected error sessionId=$sessionId error=$error');
+    }
   }
 
   Future<void> registerMonetizationEvent({

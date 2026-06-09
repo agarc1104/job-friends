@@ -47,17 +47,21 @@ pending_interview_application_id: str | None = None
 # archivo local para recordar credenciales
 CREDENTIALS_FILE = "saved_credentials.json"
 CV_BUCKET = "applicant-cvs"
-GEMINI_API_KEY = settings.gemini_api_key
-GEMINI_MODEL = settings.gemini_model
-GEMINI_API_VERSION = settings.gemini_api_version
-GEMINI_FALLBACK_MODELS = settings.gemini_fallback_models
+DEEPSEEK_API_KEY = settings.deepseek_api_key
+DEEPSEEK_MODEL = settings.deepseek_model
+DEEPSEEK_API_BASE_URL = settings.deepseek_base_url.rstrip("/")
+DEEPSEEK_FALLBACK_MODELS = settings.deepseek_fallback_models
+# Aliases kept to avoid touching UI wording and high-level flow names.
+GEMINI_API_KEY = DEEPSEEK_API_KEY
+GEMINI_MODEL = DEEPSEEK_MODEL
+GEMINI_FALLBACK_MODELS = DEEPSEEK_FALLBACK_MODELS
 CV_METADATA_TABLE = settings.cv_metadata_table
 ALLOWED_CV_EXTENSIONS = {
     ".pdf": "application/pdf",
     ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
-AI_CV_OUTPUT_FORMATS = {"docx", "pdf"}
+AI_CV_OUTPUT_FORMATS = {"pdf"}
 ALLOWED_PHOTO_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 MAX_PROFILE_PHOTO_BYTES = 3 * 1024 * 1024
 AI_CV_COLOR_PALETTES: list[dict[str, str]] = [
@@ -231,7 +235,7 @@ def extract_profile_photo_bytes(profile_data: dict[str, str]) -> bytes | None:
 
 def normalize_ai_cv_output_format(output_format: str | None) -> str:
     normalized = normalize_text(output_format or "").lower()
-    return normalized if normalized in AI_CV_OUTPUT_FORMATS else "docx"
+    return normalized if normalized in AI_CV_OUTPUT_FORMATS else "pdf"
 
 
 def build_gemini_cv_prompt(profile_data: dict[str, str], full_name: str = "", email: str = "") -> str:
@@ -263,7 +267,7 @@ def build_gemini_cv_prompt(profile_data: dict[str, str], full_name: str = "", em
 
     return (
         "Actua como un arquitecto de documentos para RRHH. "
-        "Genera el CODIGO ESTRUCTURADO del CV en formato JSON valido para luego renderizar DOCX o PDF.\n\n"
+        "Genera el CODIGO ESTRUCTURADO del CV en formato JSON valido para luego renderizar PDF.\n\n"
         f"Nombre completo: {full_name}\n"
         f"Email: {email}\n"
         f"Modo de generacion: {generation_mode_label}\n"
@@ -306,7 +310,7 @@ def build_gemini_cv_prompt(profile_data: dict[str, str], full_name: str = "", em
         "    {\"id\": \"certifications\", \"title\": \"Certificaciones\", \"items\": [\"...\"]},\n"
         "    {\"id\": \"achievements\", \"title\": \"Logros\", \"items\": [\"...\"]}\n"
         "  ],\n"
-        "  \"render_hints\": {\"target_formats\": [\"docx\", \"pdf\"], \"language\": \"es\"}\n"
+        "  \"render_hints\": {\"target_formats\": [\"pdf\"], \"language\": \"es\"}\n"
         "}\n"
         "3) Incluye SIEMPRE las 8 secciones anteriores, aunque alguna tenga 1 item breve.\n"
         "4) Manten tono profesional, concreto y ATS-friendly.\n"
@@ -407,7 +411,7 @@ def build_local_cv_structure(profile_data: dict[str, str], full_name: str, email
             "email": normalize_text(email),
         },
         "sections": sections,
-        "render_hints": {"target_formats": ["docx", "pdf"], "language": "es"},
+        "render_hints": {"target_formats": ["pdf"], "language": "es"},
     }
 
 
@@ -448,10 +452,10 @@ def normalize_cv_structure(raw_cv: dict, profile_data: dict[str, str], full_name
         normalized_sections.append({"id": section_id, "title": title, "items": normalized_items})
 
     render_hints = raw_cv.get("render_hints") if isinstance(raw_cv.get("render_hints"), dict) else {}
-    formats = render_hints.get("target_formats") if isinstance(render_hints.get("target_formats"), list) else ["docx", "pdf"]
+    formats = render_hints.get("target_formats") if isinstance(render_hints.get("target_formats"), list) else ["pdf"]
     normalized_formats = [normalize_text(str(item)).lower() for item in formats if normalize_text(str(item))]
     if not normalized_formats:
-        normalized_formats = ["docx", "pdf"]
+        normalized_formats = ["pdf"]
 
     return {
         "document_type": "cv_blueprint_v1",
@@ -566,9 +570,21 @@ def create_cv_docx_from_html(html: str) -> bytes:
 
 
 def extract_gemini_text(response_data: dict) -> str:
+    # DeepSeek returns choices[].message.content; keep a Gemini fallback parser
+    # to preserve compatibility for historical responses/tests.
+    choices = response_data.get("choices", []) or []
+    best_text = ""
+    for choice in choices:
+        message = choice.get("message", {}) if isinstance(choice, dict) else {}
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        if isinstance(content, str) and len(content.strip()) > len(best_text):
+            best_text = content.strip()
+
+    if best_text:
+        return best_text
+
     candidates = response_data.get("candidates", []) or []
     text_parts: list[str] = []
-
     for candidate in candidates:
         content = candidate.get("content", {}) or {}
         parts = content.get("parts", []) or []
@@ -592,6 +608,43 @@ def extract_gemini_error_detail(response: httpx.Response | None) -> str:
     return str(message or "").strip()
 
 
+def deepseek_url() -> str:
+    return f"{DEEPSEEK_API_BASE_URL}/chat/completions"
+
+
+def deepseek_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def to_deepseek_messages(history: list[dict]) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        raw_role = str(item.get("role", "user")).strip().lower()
+        role = "assistant" if raw_role in {"assistant", "model"} else "user"
+        content = ""
+
+        if isinstance(item.get("content"), str):
+            content = str(item.get("content", "")).strip()
+        else:
+            parts = item.get("parts", [])
+            if isinstance(parts, list):
+                texts = []
+                for part in parts:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        texts.append(part["text"])
+                content = "\n".join(texts).strip()
+
+        if content:
+            messages.append({"role": role, "content": content})
+
+    return messages
+
+
 def is_supabase_missing_table_error(ex: Exception, table_name: str) -> bool:
     message = str(ex)
     normalized = message.lower()
@@ -600,41 +653,32 @@ def is_supabase_missing_table_error(ex: Exception, table_name: str) -> bool:
 
 def generate_cv_structure_with_gemini(profile_data: dict[str, str], full_name: str, email: str) -> dict:
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY no configurada.")
+        raise ValueError("DEEPSEEK_API_KEY no configurada.")
 
     prompt = build_gemini_cv_prompt(profile_data, full_name, email)
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.5,
-            "topP": 0.9,
-            "maxOutputTokens": 2048,
-        },
-    }
 
     models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
     last_error_detail = ""
     last_status_code = 0
 
     for model_name in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{model_name}:generateContent"
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.5,
+            "max_tokens": 2048,
+        }
         try:
             response = httpx.post(
-                url,
+                deepseek_url(),
                 json=payload,
-                headers={"x-goog-api-key": GEMINI_API_KEY},
+                headers=deepseek_headers(),
                 timeout=45.0,
             )
             response.raise_for_status()
             generated_text = extract_gemini_text(response.json())
             if not generated_text:
-                raise ValueError("Gemini no devolvio contenido para el CV estructurado.")
+                raise ValueError("DeepSeek no devolvio contenido para el CV estructurado.")
 
             parsed_cv = parse_gemini_json_output(generated_text)
             normalized_cv = normalize_cv_structure(parsed_cv, profile_data, full_name, email)
@@ -647,23 +691,15 @@ def generate_cv_structure_with_gemini(profile_data: dict[str, str], full_name: s
                     f"JSON a reparar:\n{generated_text}"
                 )
                 repair_payload = {
-                    "contents": [
-                        {
-                            "parts": [
-                                {"text": repair_prompt}
-                            ]
-                        }
-                    ],
-                    "generationConfig": {
-                        "temperature": 0.3,
-                        "topP": 0.8,
-                        "maxOutputTokens": 2048,
-                    },
+                    "model": model_name,
+                    "messages": [{"role": "user", "content": repair_prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 2048,
                 }
                 repair_response = httpx.post(
-                    url,
+                    deepseek_url(),
                     json=repair_payload,
-                    headers={"x-goog-api-key": GEMINI_API_KEY},
+                    headers=deepseek_headers(),
                     timeout=45.0,
                 )
                 repair_response.raise_for_status()
@@ -672,7 +708,7 @@ def generate_cv_structure_with_gemini(profile_data: dict[str, str], full_name: s
                 normalized_cv = normalize_cv_structure(repaired_cv, profile_data, full_name, email)
 
             if not looks_like_structured_cv_code(normalized_cv):
-                raise ValueError("Gemini devolvio una estructura de CV incompleta tras normalizacion.")
+                raise ValueError("DeepSeek devolvio una estructura de CV incompleta tras normalizacion.")
 
             return normalized_cv
         except httpx.HTTPStatusError as ex:
@@ -684,21 +720,21 @@ def generate_cv_structure_with_gemini(profile_data: dict[str, str], full_name: s
             if status_code == 404:
                 continue
             if status_code == 429:
-                raise ValueError("Gemini devolvio 429 por limite de cuota o solicitudes.") from None
+                raise ValueError("DeepSeek devolvio 429 por limite de cuota o solicitudes.") from None
             if error_detail:
-                raise ValueError(f"Gemini devolvio error HTTP {status_code}: {error_detail}") from None
-            raise ValueError(f"Gemini devolvio error HTTP {status_code}.") from None
+                raise ValueError(f"DeepSeek devolvio error HTTP {status_code}: {error_detail}") from None
+            raise ValueError(f"DeepSeek devolvio error HTTP {status_code}.") from None
         except httpx.HTTPError as ex:
-            raise ValueError(f"No fue posible conectar con Gemini: {ex}") from None
+            raise ValueError(f"No fue posible conectar con DeepSeek: {ex}") from None
 
     attempted_models = ", ".join(models_to_try)
     if last_status_code == 404:
         detail_suffix = f" Detalle: {last_error_detail}" if last_error_detail else ""
         raise ValueError(
-            "Gemini devolvio 404 para los modelos configurados. "
+            "DeepSeek devolvio 404 para los modelos configurados. "
             f"Modelos probados: {attempted_models}.{detail_suffix}"
         )
-    raise ValueError("No fue posible generar la estructura del CV con Gemini.")
+    raise ValueError("No fue posible generar la estructura del CV con DeepSeek.")
 
 
 def generate_cv_structure(profile_data: dict[str, str], full_name: str, email: str) -> dict:
@@ -837,7 +873,23 @@ def split_text_for_pdf(text: str, max_width: float, font_name: str, font_size: i
 
         if current_line:
             lines.append(current_line)
-        current_line = word
+
+        if pdfmetrics.stringWidth(word, font_name, font_size) <= max_width:
+            current_line = word
+            continue
+
+        chunk = ""
+        for character in word:
+            candidate_chunk = f"{chunk}{character}"
+            if candidate_chunk and pdfmetrics.stringWidth(candidate_chunk, font_name, font_size) <= max_width:
+                chunk = candidate_chunk
+                continue
+
+            if chunk:
+                lines.append(chunk)
+            chunk = character
+
+        current_line = chunk
 
     if current_line:
         lines.append(current_line)
@@ -949,7 +1001,7 @@ def create_cv_pdf_bytes(full_name: str, email: str, profile_data: dict[str, str]
 
     sections = [section for section in normalized_structure.get("sections", []) or [] if isinstance(section, dict)]
     if selected_columns == "dos_columnas":
-        column_gap = 22
+        column_gap = 30
         column_width = (page_width - (margin * 2) - column_gap) / 2
         column_x = [margin, margin + column_width + column_gap]
         column_y = [y, y]
@@ -1130,7 +1182,7 @@ def upload_cv_file(email: str, file_path: str, file_name: str | None = None) -> 
     return upload_cv_bytes(email, resolved_name, content, source="uploaded")
 
 
-def create_ai_cv_for_user(email: str, full_name: str, profile_data: dict[str, str], output_format: str = "docx") -> dict:
+def create_ai_cv_for_user(email: str, full_name: str, profile_data: dict[str, str], output_format: str = "pdf") -> dict:
     normalized_output_format = normalize_ai_cv_output_format(output_format)
     enriched_profile = {
         key: value
@@ -1144,12 +1196,8 @@ def create_ai_cv_for_user(email: str, full_name: str, profile_data: dict[str, st
     enriched_profile["output_format"] = normalized_output_format
     cv_structure = generate_cv_structure(profile_data, full_name, email)
     cv_code = json.dumps(cv_structure, ensure_ascii=False, indent=2)
-    if normalized_output_format == "pdf":
-        file_bytes = create_cv_pdf_bytes(full_name, email, profile_data, cv_structure)
-        file_extension = "pdf"
-    else:
-        file_bytes = create_cv_docx_bytes(full_name, email, profile_data, cv_structure)
-        file_extension = "docx"
+    file_bytes = create_cv_pdf_bytes(full_name, email, profile_data, cv_structure)
+    file_extension = "pdf"
     file_name = f"cv_{sanitize_storage_name(full_name or email)}.{file_extension}"
     metadata = upload_cv_bytes(
         email=email,
@@ -1658,7 +1706,7 @@ def build_interview_system_prompt(application_row: dict) -> str:
 
 def generate_interview_reply_with_gemini(application_row: dict, history: list[dict[str, str]], user_message: str) -> str:
     if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY no configurada.")
+        raise ValueError("DEEPSEEK_API_KEY no configurada.")
 
     conversation_parts: list[str] = []
     for msg in history[-12:]:
@@ -1678,48 +1726,44 @@ def generate_interview_reply_with_gemini(application_row: dict, history: list[di
         "Responde como Asistente:"
     )
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.6,
-            "topP": 0.9,
-            "maxOutputTokens": 1024,
-        },
-    }
-
     models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
     last_status_code = 0
     last_error_detail = ""
 
     for model_name in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}/models/{model_name}:generateContent"
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.6,
+            "max_tokens": 1024,
+        }
         try:
             response = httpx.post(
-                url,
+                deepseek_url(),
                 json=payload,
-                headers={"x-goog-api-key": GEMINI_API_KEY},
+                headers=deepseek_headers(),
                 timeout=45.0,
             )
             response.raise_for_status()
             gemini_text = extract_gemini_text(response.json())
             if gemini_text:
                 return gemini_text
-            raise ValueError("Gemini no devolvio contenido para entrevista.")
+            raise ValueError("DeepSeek no devolvio contenido para entrevista.")
         except httpx.HTTPStatusError as ex:
             last_status_code = ex.response.status_code
             last_error_detail = extract_gemini_error_detail(ex.response)
             if ex.response.status_code == 404:
                 continue
             if ex.response.status_code == 429:
-                raise ValueError("Gemini devolvio 429 por limite de cuota o solicitudes.") from None
+                raise ValueError("DeepSeek devolvio 429 por limite de cuota o solicitudes.") from None
             detail = f": {last_error_detail}" if last_error_detail else ""
-            raise ValueError(f"Gemini devolvio error HTTP {ex.response.status_code}{detail}") from None
+            raise ValueError(f"DeepSeek devolvio error HTTP {ex.response.status_code}{detail}") from None
         except httpx.HTTPError as ex:
-            raise ValueError(f"No fue posible conectar con Gemini: {ex}") from None
+            raise ValueError(f"No fue posible conectar con DeepSeek: {ex}") from None
 
     if last_status_code == 404:
-        raise ValueError("Gemini devolvio 404 para los modelos configurados.")
-    raise ValueError("No fue posible generar respuesta de entrevista con Gemini.")
+        raise ValueError("DeepSeek devolvio 404 para los modelos configurados.")
+    raise ValueError("No fue posible generar respuesta de entrevista con DeepSeek.")
 
 
 def collect_highlight_items(job: dict) -> list[str]:
@@ -1983,11 +2027,6 @@ def open_ai_cv_builder_dialog(
 
     output_format_options = [
         {
-            "id": "docx",
-            "name": "DOCX",
-            "description": "Editable",
-        },
-        {
             "id": "pdf",
             "name": "PDF",
             "description": "No editable",
@@ -2000,7 +2039,7 @@ def open_ai_cv_builder_dialog(
         "processing": False,
         "awaiting_choice": None,
         "design_step_index": 0,
-        "output_format": normalize_ai_cv_output_format(values.get("output_format", "docx")),
+        "output_format": normalize_ai_cv_output_format(values.get("output_format", "pdf")),
         "profile_data": {
             "target_roles": values.get("target_roles", ""),
             "summary": values.get("summary", ""),
@@ -2445,26 +2484,20 @@ def open_ai_cv_builder_dialog(
             "El HTML generado debe ser directamente renderizable como un CV profesional real."
         )
 
-        payload = {
-            "contents": [{"parts": [{"text": html_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.3,
-                "topP": 0.85,
-                "maxOutputTokens": 8192,
-            },
-        }
         models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
         for model_name in models_to_try:
-            url = (
-                f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}"
-                f"/models/{model_name}:generateContent"
-            )
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": html_prompt}],
+                "temperature": 0.3,
+                "max_tokens": 8192,
+            }
             try:
                 response = await asyncio.to_thread(
                     httpx.post,
-                    url,
+                    deepseek_url(),
                     json=payload,
-                    headers={"x-goog-api-key": GEMINI_API_KEY},
+                    headers=deepseek_headers(),
                     timeout=90.0,
                 )
                 response.raise_for_status()
@@ -2475,10 +2508,10 @@ def open_ai_cv_builder_dialog(
                 if ex.response.status_code == 404:
                     continue
                 detail = extract_gemini_error_detail(ex.response)
-                raise ValueError(f"Gemini error {ex.response.status_code}: {detail or ''}") from None
+                raise ValueError(f"DeepSeek error {ex.response.status_code}: {detail or ''}") from None
             except httpx.HTTPError as ex:
-                raise ValueError(f"No se pudo conectar con Gemini: {ex}") from None
-        raise ValueError("Gemini no respondió en ningún modelo configurado.")
+                raise ValueError(f"No se pudo conectar con DeepSeek: {ex}") from None
+        raise ValueError("DeepSeek no respondió en ningún modelo configurado.")
 
     async def finalize_flow():
         req_keys = [s["key"] for s in sections if s.get("required", False)]
@@ -2519,7 +2552,7 @@ def open_ai_cv_builder_dialog(
         try:
             details = user_details.get(current_user or "", {})
             full_name = f"{details.get('nombre', '')} {details.get('apellido', '')}".strip()
-            output_format = normalize_ai_cv_output_format(chat_state.get("output_format", "docx"))
+            output_format = "pdf"
             chat_state["profile_data"]["cv_color_palette"] = normalize_ai_cv_color_palette(
                 chat_state["profile_data"].get("cv_color_palette", "")
             )
@@ -2559,12 +2592,8 @@ def open_ai_cv_builder_dialog(
             status_text.value = f"Convirtiendo HTML a {output_format.upper()}..."
             page.update()
 
-            if output_format == "pdf":
-                file_bytes = await asyncio.to_thread(create_cv_pdf_from_html, cv_html)
-                file_ext = "pdf"
-            else:
-                file_bytes = await asyncio.to_thread(create_cv_docx_from_html, cv_html)
-                file_ext = "docx"
+            file_bytes = await asyncio.to_thread(create_cv_pdf_from_html, cv_html)
+            file_ext = "pdf"
 
             file_name = f"cv_{sanitize_storage_name(resolved_name)}.{file_ext}"
             profile_to_store = {k: v for k, v in chat_state["profile_data"].items() if k != "cv_photo_base64"}
@@ -2750,7 +2779,7 @@ def open_gemini_chat_cv_dialog(
     chat_history: list[dict] = []
     chat_state = {
         "processing": False,
-        "output_format": "docx",
+        "output_format": "pdf",
         "awaiting_format": False,
         "ready": False,
         "startup_loading": True,
@@ -2893,26 +2922,20 @@ def open_gemini_chat_cv_dialog(
 
     async def call_gemini(user_text: str) -> str:
         chat_history.append({"role": "user", "parts": [{"text": user_text}]})
-        payload = {
-            "contents": chat_history,
-            "generationConfig": {
-                "temperature": 0.7,
-                "topP": 0.9,
-                "maxOutputTokens": 2048,
-            },
-        }
         models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
         for model_name in models_to_try:
-            url = (
-                f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}"
-                f"/models/{model_name}:generateContent"
-            )
+            payload = {
+                "model": model_name,
+                "messages": to_deepseek_messages(chat_history),
+                "temperature": 0.7,
+                "max_tokens": 2048,
+            }
             try:
                 response = await asyncio.to_thread(
                     httpx.post,
-                    url,
+                    deepseek_url(),
                     json=payload,
-                    headers={"x-goog-api-key": GEMINI_API_KEY},
+                    headers=deepseek_headers(),
                     timeout=60.0,
                 )
                 response.raise_for_status()
@@ -2924,14 +2947,14 @@ def open_gemini_chat_cv_dialog(
                 if ex.response.status_code == 404:
                     continue
                 detail = extract_gemini_error_detail(ex.response)
-                raise ValueError(f"Gemini error {ex.response.status_code}: {detail or ''}") from None
+                raise ValueError(f"DeepSeek error {ex.response.status_code}: {detail or ''}") from None
             except httpx.HTTPError as ex:
-                raise ValueError(f"No se pudo conectar con Gemini: {ex}") from None
-        raise ValueError("Gemini no respondió en ningún modelo configurado.")
+                raise ValueError(f"No se pudo conectar con DeepSeek: {ex}") from None
+        raise ValueError("DeepSeek no respondió en ningún modelo configurado.")
 
     async def extract_cv_html_from_chat() -> str:
         """Envía un prompt final a Gemini solicitando el HTML completo del CV basado en la conversación."""
-        selected_output_format = normalize_ai_cv_output_format(chat_state.get("output_format", "docx"))
+        selected_output_format = "pdf"
 
         # Pistas visuales acordadas en la conversación; si el usuario las escogió mediante botones
         # antes de abrir este diálogo estarán en chat_state, de lo contrario Gemini las decide.
@@ -2981,26 +3004,20 @@ def open_gemini_chat_cv_dialog(
         )
 
         temp_history = chat_history + [{"role": "user", "parts": [{"text": extraction_prompt}]}]
-        payload = {
-            "contents": temp_history,
-            "generationConfig": {
-                "temperature": 0.2,
-                "topP": 0.85,
-                "maxOutputTokens": 8192,
-            },
-        }
         models_to_try = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
         for model_name in models_to_try:
-            url = (
-                f"https://generativelanguage.googleapis.com/{GEMINI_API_VERSION}"
-                f"/models/{model_name}:generateContent"
-            )
+            payload = {
+                "model": model_name,
+                "messages": to_deepseek_messages(temp_history),
+                "temperature": 0.2,
+                "max_tokens": 8192,
+            }
             try:
                 response = await asyncio.to_thread(
                     httpx.post,
-                    url,
+                    deepseek_url(),
                     json=payload,
-                    headers={"x-goog-api-key": GEMINI_API_KEY},
+                    headers=deepseek_headers(),
                     timeout=90.0,
                 )
                 response.raise_for_status()
@@ -3039,16 +3056,12 @@ def open_gemini_chat_cv_dialog(
             if photo_bytes:
                 cv_html = inject_photo_into_html(cv_html, photo_bytes)
 
-            output_format = normalize_ai_cv_output_format(chat_state.get("output_format", "docx"))
+            output_format = "pdf"
             status_text.value = f"Convirtiendo HTML a {output_format.upper()}..."
             page.update()
 
-            if output_format == "pdf":
-                file_bytes = await asyncio.to_thread(create_cv_pdf_from_html, cv_html)
-                file_ext = "pdf"
-            else:
-                file_bytes = await asyncio.to_thread(create_cv_docx_from_html, cv_html)
-                file_ext = "docx"
+            file_bytes = await asyncio.to_thread(create_cv_pdf_from_html, cv_html)
+            file_ext = "pdf"
 
             if generate_and_store:
                 details = user_details.get(current_user or "", {})
@@ -3105,19 +3118,13 @@ def open_gemini_chat_cv_dialog(
         page.update()
         await finalize_generation()
 
-    docx_fmt_btn = mk_button(
-        "Docx",
-        on_click=lambda e: run_async(choose_format("docx")),
-        variant="secondary",
-        palette=palette,
-    )
     pdf_fmt_btn = mk_button(
         "Pdf",
         on_click=lambda e: run_async(choose_format("pdf")),
         variant="secondary",
         palette=palette,
     )
-    format_quick_actions.controls = [docx_fmt_btn, pdf_fmt_btn]
+    format_quick_actions.controls = [pdf_fmt_btn]
 
     async def on_generate_cv(e):
         if chat_state["processing"]:
@@ -3127,7 +3134,7 @@ def open_gemini_chat_cv_dialog(
         format_quick_actions.visible = True
         add_message(
             "bot",
-            "¿En qué formato deseas tu CV?\n1) DOCX (editable)\n2) PDF\n\nUsa los botones o escribe: docx o pdf",
+            "¿En qué formato deseas tu CV?\nPDF\n\nUsa el botón o escribe: pdf",
         )
         page.update()
 
@@ -3144,10 +3151,9 @@ def open_gemini_chat_cv_dialog(
 
         if chat_state["awaiting_format"]:
             add_message("user", user_text)
-            alias_map = {"1": "docx", "docx": "docx", "2": "pdf", "pdf": "pdf"}
-            selected = alias_map.get(user_text.lower())
+            selected = "pdf" if user_text.lower() == "pdf" else None
             if not selected:
-                add_message("bot", "Por favor responde con: docx o pdf (o usa los botones).")
+                add_message("bot", "Por favor responde con: pdf (o usa el botón).")
                 page.update()
                 return
             chat_state["awaiting_format"] = False
@@ -4281,7 +4287,7 @@ async def show_menu_ui(page: ft.Page):
         try:
             details = user_details.get(current_user or "", {})
             full_name = f"{details.get('nombre', '')} {details.get('apellido', '')}".strip()
-            output_format = normalize_ai_cv_output_format(profile_data.get("output_format", "docx"))
+            output_format = "pdf"
             metadata = await asyncio.to_thread(
                 create_ai_cv_for_user,
                 current_user,
@@ -4736,7 +4742,7 @@ async def show_register_ui(page: ft.Page):
     cv_path_input = mk_textfield("Ruta local del CV (.pdf, .doc, .docx)", palette=palette, expand=True, bgcolor=palette["surface"])
     message = mk_status_text(page, palette, tone="error")
     cv_message = mk_status_text(page, palette, "Debes cargar un CV o crearlo con IA antes de registrarte.")
-    cv_state = {"mode": None, "file_path": None, "file_name": "", "profile_data": None, "output_format": "docx"}
+    cv_state = {"mode": None, "file_path": None, "file_name": "", "profile_data": None, "output_format": "pdf"}
 
     def set_cv_status(text: str, color: str):
         cv_message.value = text
@@ -4766,7 +4772,7 @@ async def show_register_ui(page: ft.Page):
         cv_state["file_path"] = None
         cv_state["file_name"] = ""
         cv_state["profile_data"] = profile_data
-        cv_state["output_format"] = normalize_ai_cv_output_format(profile_data.get("output_format", "docx"))
+        cv_state["output_format"] = "pdf"
         target_roles = profile_data.get("target_roles", "vacantes seleccionadas")
         set_cv_status(
             f"Borrador de CV {cv_state['output_format'].upper()} con IA listo para: {target_roles}",
@@ -4813,7 +4819,7 @@ async def show_register_ui(page: ft.Page):
                                 email,
                                 full_name,
                                 cv_state["profile_data"],
-                                cv_state.get("output_format", "docx"),
+                                "pdf",
                             )
                     except Exception:
                         supabase.table("Aplicants").delete().eq("Email", email).execute()

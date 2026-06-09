@@ -2,13 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/jobfriends_repository.dart';
+import '../../l10n/localized_text.dart';
 import '../../models/application_record.dart';
 import '../../models/user_profile.dart';
+import '../../theme/design_system.dart';
 
 class ApplicationsScreen extends StatefulWidget {
-  const ApplicationsScreen({required this.currentUser, super.key});
+  const ApplicationsScreen({
+    required this.currentUser,
+    required this.onApplicationsChanged,
+    super.key,
+  });
 
   final UserProfile? currentUser;
+  final VoidCallback onApplicationsChanged;
 
   @override
   State<ApplicationsScreen> createState() => _ApplicationsScreenState();
@@ -72,9 +79,35 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       setState(() {
         _future = _loadApplications();
       });
+      widget.onApplicationsChanged();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Empleo agregado exitosamente.')),
+        SnackBar(content: Text(tr(context, 'applications.jobAdded'))),
       );
+    }
+  }
+
+  String _statusLabel(BuildContext context, String status) {
+    switch (_canonicalStatus(status)) {
+      case 'Aplicado':
+        return tr(context, 'applications.status.applied');
+      case 'CV revisado':
+        return tr(context, 'applications.status.cvReviewed');
+      case 'Primera entrevista':
+        return tr(context, 'applications.status.firstInterview');
+      case 'Segunda entrevista':
+        return tr(context, 'applications.status.secondInterview');
+      case 'Tercera entrevista':
+        return tr(context, 'applications.status.thirdInterview');
+      case 'Entrevista tecnica':
+        return tr(context, 'applications.status.technicalInterview');
+      case 'Oferta recibida':
+        return tr(context, 'applications.status.offerReceived');
+      case 'Contratado':
+        return tr(context, 'applications.status.hired');
+      case 'Rechazado':
+        return tr(context, 'applications.status.rejected');
+      default:
+        return status;
     }
   }
 
@@ -174,16 +207,21 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         final cleanDescription = _cleanDescription(item.description);
         return SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+            padding: const EdgeInsets.fromLTRB(
+              AppSpacing.md,
+              AppSpacing.xs,
+              AppSpacing.md,
+              AppSpacing.md,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(AppSpacing.md),
                   decoration: BoxDecoration(
                     color: palette.cardColor,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(AppRadii.sm),
                     border: Border.all(
                       color: palette.chipColor.withValues(alpha: 0.22),
                     ),
@@ -192,7 +230,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Resumen de vacante',
+                        tr(sheetContext, 'applications.vacancySummary'),
                         style: Theme.of(sheetContext).textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w700,
                               color: palette.chipColor,
@@ -205,9 +243,14 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                               fontWeight: FontWeight.w700,
                             ),
                       ),
-                      const SizedBox(height: 6),
-                      Text(item.website),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: AppSpacing.xxs),
+                      Text(
+                        item.website,
+                        style: Theme.of(sheetContext).textTheme.bodyMedium?.copyWith(
+                              color: AppColors.secondaryText,
+                            ),
+                      ),
+                      const SizedBox(height: AppSpacing.sm),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                         decoration: BoxDecoration(
@@ -215,20 +258,20 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
-                          displayStatus,
+                          _statusLabel(sheetContext, displayStatus),
                           style: TextStyle(color: palette.chipColor, fontWeight: FontWeight.w700),
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 14),
+                const SizedBox(height: AppSpacing.sm),
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(AppSpacing.md),
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: BorderRadius.circular(16),
+                    borderRadius: BorderRadius.circular(AppRadii.sm),
                     border: Border.all(
                       color: palette.chipColor.withValues(alpha: 0.18),
                     ),
@@ -237,22 +280,22 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Descripcion',
+                        tr(sheetContext, 'applications.description'),
                         style: Theme.of(sheetContext).textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w700,
                               color: palette.chipColor,
                             ),
                       ),
-                      const SizedBox(height: 10),
+                      const SizedBox(height: AppSpacing.xxs),
                       Text(
                         cleanDescription.isEmpty
-                            ? 'Sin descripcion disponible para esta vacante.'
+                            ? tr(sheetContext, 'applications.noDescription')
                             : cleanDescription,
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 16),
+                const SizedBox(height: AppSpacing.md),
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
@@ -260,7 +303,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                         ? null
                         : () => _openJobOffer(item.applicationLink),
                     icon: const Icon(Icons.open_in_new_rounded),
-                    label: const Text('Abrir vacante'),
+                    label: Text(tr(sheetContext, 'applications.openVacancy')),
                   ),
                 ),
               ],
@@ -279,7 +322,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('El enlace de la oferta no es valido.')),
+        SnackBar(content: Text(tr(context, 'applications.invalidOfferLink'))),
       );
       return;
     }
@@ -287,7 +330,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
     final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!opened && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir la oferta.')),
+        SnackBar(content: Text(tr(context, 'applications.couldNotOpenOffer'))),
       );
     }
   }
@@ -313,7 +356,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         _future = _loadApplications();
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Estado actualizado a "$newStatus".')),
+        SnackBar(content: Text(tr(context, 'applications.statusUpdatedTo', args: {'status': _statusLabel(context, newStatus)}))),
       );
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) {
@@ -327,7 +370,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo actualizar el estado.')),
+        SnackBar(content: Text(tr(context, 'applications.couldNotUpdateStatus'))),
       );
     } finally {
       if (mounted) {
@@ -342,19 +385,19 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Eliminar aplicacion'),
+        title: Text(tr(dialogContext, 'applications.deleteApplication')),
         content: Text(
-          '¿Estas seguro de que deseas eliminar la vacante "${item.vacancy}"? Esta accion no se puede deshacer.',
+          tr(dialogContext, 'applications.deleteConfirm', args: {'vacancy': item.vacancy}),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancelar'),
+            child: Text(tr(dialogContext, 'common.cancel')),
           ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: const Color(0xFFBC4749)),
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Eliminar'),
+            child: Text(tr(dialogContext, 'common.delete')),
           ),
         ],
       ),
@@ -364,7 +407,16 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       return;
     }
 
+    final user = widget.currentUser;
+    if (user == null) {
+      return;
+    }
+
     try {
+      await _repository.deleteInterviewDataForApplication(
+        applicantEmail: user.email,
+        applicationId: item.id,
+      );
       await _repository.deleteApplication(applicationId: item.id);
       if (!mounted) {
         return;
@@ -372,8 +424,9 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       setState(() {
         _future = _loadApplications();
       });
+      widget.onApplicationsChanged();
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Aplicacion eliminada correctamente.')),
+        SnackBar(content: Text(tr(context, 'applications.deletedSuccessfully'))),
       );
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) {
@@ -387,7 +440,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo eliminar la aplicacion.')),
+        SnackBar(content: Text(tr(context, 'applications.couldNotDelete'))),
       );
     }
   }
@@ -397,12 +450,12 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
     final user = widget.currentUser;
     if (user == null) {
       return ListView(
-        padding: const EdgeInsets.all(16),
-        children: const [
+        padding: const EdgeInsets.all(AppSpacing.md),
+        children: [
           Card(
             child: Padding(
-              padding: EdgeInsets.all(20),
-              child: Text('Inicia sesion para cargar tus aplicaciones reales desde Supabase.'),
+              padding: const EdgeInsets.all(AppSpacing.md),
+              child: Text(tr(context, 'applications.loginToLoad')),
             ),
           ),
         ],
@@ -422,36 +475,43 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
           final items = snapshot.data ?? const <ApplicationRecord>[];
 
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(AppSpacing.md),
             children: [
+              Text(
+                tr(context, 'nav.myJobs'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: AppSpacing.md),
               Align(
                 alignment: Alignment.centerLeft,
                 child: OutlinedButton.icon(
                   onPressed: _openAddManualDialog,
                   icon: const Icon(Icons.add_link_rounded),
-                  label: const Text('Agregar empleo manualmente'),
+                  label: Text(tr(context, 'applications.addManually')),
                 ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: AppSpacing.sm),
               if (snapshot.connectionState == ConnectionState.waiting)
                 const Card(
                   child: Padding(
-                    padding: EdgeInsets.all(20),
+                    padding: EdgeInsets.all(AppSpacing.md),
                     child: Center(child: CircularProgressIndicator()),
                   ),
                 )
               else if (snapshot.hasError)
                 Card(
                   child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Text('No se pudieron cargar las aplicaciones: ${snapshot.error}'),
+                    padding: const EdgeInsets.all(AppSpacing.md),
+                    child: Text(tr(context, 'applications.couldNotLoad', args: {'error': '${snapshot.error}'})),
                   ),
                 )
               else if (items.isEmpty)
-                const Card(
+                Card(
                   child: Padding(
-                    padding: EdgeInsets.all(20),
-                    child: Text('Aun no tienes aplicaciones registradas para este correo.'),
+                    padding: const EdgeInsets.all(AppSpacing.md),
+                    child: Text(tr(context, 'applications.noneYet')),
                   ),
                 )
               else
@@ -461,59 +521,69 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                     final palette = _statusPalette(displayStatus);
                     final isUpdatingStatus = _isUpdatingStatusById[item.id] == true;
                     return Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.only(bottom: AppSpacing.sm),
                       child: Card(
                         color: palette.cardColor,
                         child: ListTile(
                           onTap: () => _showApplicationDetails(item),
-                          contentPadding: const EdgeInsets.fromLTRB(16, 16, 8, 16),
-                          title: Text(item.vacancy),
+                          contentPadding: const EdgeInsets.fromLTRB(
+                            AppSpacing.md,
+                            AppSpacing.md,
+                            8,
+                            AppSpacing.md,
+                          ),
+                          title: Text(
+                            item.vacancy,
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
                           subtitle: Text(item.website),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               PopupMenuButton<String>(
-                            enabled: !isUpdatingStatus,
-                            tooltip: 'Cambiar estado',
-                            onSelected: (newStatus) => _updateApplicationStatus(item, newStatus),
-                            itemBuilder: (context) {
-                              return _applicationStatuses
-                                  .map(
-                                    (status) => CheckedPopupMenuItem<String>(
-                                      checked: status == displayStatus,
-                                      value: status,
-                                      child: Text(status),
-                                    ),
-                                  )
-                                  .toList();
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: palette.chipColor.withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    isUpdatingStatus ? 'Actualizando...' : displayStatus,
-                                    style: TextStyle(
-                                      color: palette.chipColor,
-                                      fontWeight: FontWeight.w700,
-                                    ),
+                                enabled: !isUpdatingStatus,
+                                tooltip: tr(context, 'applications.changeStatus'),
+                                onSelected: (newStatus) => _updateApplicationStatus(item, newStatus),
+                                itemBuilder: (context) {
+                                  return _applicationStatuses
+                                      .map(
+                                        (status) => CheckedPopupMenuItem<String>(
+                                          checked: status == displayStatus,
+                                          value: status,
+                                          child: Text(_statusLabel(context, status)),
+                                        ),
+                                      )
+                                      .toList();
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: palette.chipColor.withValues(alpha: 0.15),
+                                    borderRadius: BorderRadius.circular(999),
                                   ),
-                                  const SizedBox(width: 6),
-                                  Icon(
-                                    Icons.arrow_drop_down_rounded,
-                                    color: palette.chipColor,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(
+                                        isUpdatingStatus ? tr(context, 'applications.updating') : _statusLabel(context, displayStatus),
+                                        style: TextStyle(
+                                          color: palette.chipColor,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Icon(
+                                        Icons.arrow_drop_down_rounded,
+                                        color: palette.chipColor,
+                                      ),
+                                    ],
                                   ),
-                                ],
+                                ),
                               ),
-                            ),
-                          ),
                               IconButton(
-                                tooltip: 'Eliminar aplicacion',
+                                tooltip: tr(context, 'applications.deleteApplication'),
                                 icon: const Icon(Icons.delete_outline_rounded),
                                 color: const Color(0xFFBC4749),
                                 onPressed: () => _deleteApplication(item),
@@ -566,7 +636,7 @@ class _AddManualJobDialogState extends State<_AddManualJobDialog> {
     final rawUrl = _urlController.text.trim();
     if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
       setState(() {
-        _errorMessage = 'Ingresa una URL valida que empiece por http:// o https://';
+        _errorMessage = tr(context, 'applications.enterValidUrl');
       });
       return;
     }
@@ -598,7 +668,7 @@ class _AddManualJobDialogState extends State<_AddManualJobDialog> {
         return;
       }
       setState(() {
-        _errorMessage = 'No se pudo agregar la URL en este momento.';
+        _errorMessage = tr(context, 'applications.couldNotAddUrlNow');
         _isLoading = false;
       });
     }
@@ -607,7 +677,7 @@ class _AddManualJobDialogState extends State<_AddManualJobDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Agregar empleo manualmente'),
+      title: Text(tr(context, 'applications.addManually')),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -616,8 +686,8 @@ class _AddManualJobDialogState extends State<_AddManualJobDialog> {
             autofocus: true,
             keyboardType: TextInputType.url,
             enabled: !_isLoading,
-            decoration: const InputDecoration(
-              labelText: 'URL del empleo',
+            decoration: InputDecoration(
+              labelText: tr(context, 'applications.jobUrl'),
               border: OutlineInputBorder(),
             ),
           ),
@@ -633,11 +703,11 @@ class _AddManualJobDialogState extends State<_AddManualJobDialog> {
       actions: [
         TextButton(
           onPressed: _isLoading ? null : () => Navigator.of(context).pop(false),
-          child: const Text('Cancelar'),
+          child: Text(tr(context, 'common.cancel')),
         ),
         FilledButton(
           onPressed: _isLoading ? null : _submit,
-          child: Text(_isLoading ? 'Procesando...' : 'Agregar empleo'),
+          child: Text(_isLoading ? tr(context, 'common.processing') : tr(context, 'applications.addJob')),
         ),
       ],
     );

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 
 import '../../config/admob_config.dart';
+import '../../l10n/localized_text.dart';
 
 class AdaptiveBannerSlot extends StatefulWidget {
   const AdaptiveBannerSlot({super.key});
@@ -67,7 +68,7 @@ class _AdaptiveBannerSlotState extends State<AdaptiveBannerSlot> {
           color: const Color(0xFFE8F0ED),
         ),
         alignment: Alignment.center,
-        child: const Text('Espacio reservado para banner AdMob'),
+        child: Text(tr(context, 'admob.placeholder')),
       );
     }
 

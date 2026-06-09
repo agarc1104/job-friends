@@ -5,6 +5,7 @@ param(
     [string]$AppEnv = "production",
     [string]$AdmobAndroidBannerId,
     [string]$AdmobAndroidInterstitialId,
+    [string]$AdmobAndroidRewardedInterstitialId,
     [switch]$SkipPubGet
 )
 
@@ -59,6 +60,9 @@ if ($AdmobAndroidBannerId) {
 }
 if ($AdmobAndroidInterstitialId) {
     $dartDefines += "--dart-define=ADMOB_ANDROID_INTERSTITIAL_ID=$AdmobAndroidInterstitialId"
+}
+if ($AdmobAndroidRewardedInterstitialId) {
+    $dartDefines += "--dart-define=ADMOB_ANDROID_REWARDED_INTERSTITIAL_ID=$AdmobAndroidRewardedInterstitialId"
 }
 
 Push-Location $projectRoot

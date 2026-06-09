@@ -19,10 +19,10 @@ class Settings:
     supabase_url: str
     supabase_key: str
     supabase_service_role_key: str
-    gemini_api_key: str
-    gemini_model: str
-    gemini_api_version: str
-    gemini_fallback_models: list[str]
+    deepseek_api_key: str
+    deepseek_model: str
+    deepseek_base_url: str
+    deepseek_fallback_models: list[str]
     cv_metadata_table: str
     monetization_events_table: str
     serpapi_api_key: str
@@ -40,12 +40,12 @@ settings = Settings(
     supabase_url=os.getenv("SUPABASE_URL", ""),
     supabase_key=os.getenv("SUPABASE_KEY", ""),
     supabase_service_role_key=os.getenv("SUPABASE_SERVICE_ROLE_KEY", ""),
-    gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-    gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-    gemini_api_version=os.getenv("GEMINI_API_VERSION", "v1beta"),
-    gemini_fallback_models=_split_csv(
-        os.getenv("GEMINI_FALLBACK_MODELS"),
-        "gemini-2.5-pro,gemini-2.5-flash-lite,gemini-flash-latest",
+    deepseek_api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+    deepseek_model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+    deepseek_base_url=os.getenv("DEEPSEEK_API_BASE_URL", "https://api.deepseek.com"),
+    deepseek_fallback_models=_split_csv(
+        os.getenv("DEEPSEEK_FALLBACK_MODELS"),
+        "",
     ),
     cv_metadata_table=os.getenv("SUPABASE_CV_TABLE", "ApplicantCVs"),
     monetization_events_table=os.getenv("SUPABASE_MONETIZATION_EVENTS_TABLE", "MonetizationEvents"),

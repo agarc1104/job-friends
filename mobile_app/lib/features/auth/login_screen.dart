@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../config/app_config.dart';
 import '../../data/jobfriends_repository.dart';
+import '../../l10n/localized_text.dart';
 import '../../models/user_profile.dart';
+import '../../theme/design_system.dart';
 
 typedef AuthenticatedHandler = Future<void> Function(
   UserProfile profile, {
@@ -79,20 +81,20 @@ class _LoginScreenState extends State<LoginScreen> {
     return digits.length >= 8;
   }
 
-  String? get _companyEmailError {
+  String? _companyEmailError(BuildContext context) {
     final value = _companyEmailController.text.trim();
     if (value.isEmpty || _isValidEmail(value)) {
       return null;
     }
-    return 'Correo invalido';
+    return tr(context, 'auth.invalidEmail');
   }
 
-  String? get _companyPhoneError {
+  String? _companyPhoneError(BuildContext context) {
     final value = _companyPhoneController.text.trim();
     if (value.isEmpty || _isValidPhone(value)) {
       return null;
     }
-    return 'Telefono invalido (minimo 8 digitos)';
+    return tr(context, 'auth.invalidPhone');
   }
 
   @override
@@ -169,7 +171,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       setState(() {
-        _statusMessage = 'Sesion iniciada como ${profile.email}';
+        _statusMessage = tr(context, 'auth.sessionStartedAs', args: {'email': profile.email});
       });
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) {
@@ -183,7 +185,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       setState(() {
-        _statusMessage = 'No se pudo conectar con Supabase.';
+        _statusMessage = tr(context, 'auth.couldNotConnectSupabase');
       });
     } finally {
       if (mounted) {
@@ -211,8 +213,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       setState(() {
-        _statusMessage =
-            'Gracias por tu interes. Te contactaremos cuando las funciones para empresas esten disponibles.';
+        _statusMessage = tr(context, 'auth.companyInterestThanks');
         _companyNameController.clear();
         _companyEmailController.clear();
         _companyPhoneController.clear();
@@ -229,7 +230,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       setState(() {
-        _statusMessage = 'No se pudo enviar el interes de la empresa.';
+        _statusMessage = tr(context, 'auth.couldNotSendCompanyInterest');
       });
     } finally {
       if (mounted) {
@@ -247,29 +248,36 @@ class _LoginScreenState extends State<LoginScreen> {
     if (widget.currentUser != null) {
       final user = widget.currentUser!;
       return ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.md),
         children: [
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Sesion activa',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    tr(context, 'auth.activeSession'),
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.xxs),
+                  Text(
+                    tr(context, 'auth.accessReadyMessage'),
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.secondaryText,
+                        ),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
                   Text(user.fullName.isEmpty ? user.email : user.fullName),
                   Text(user.email),
                   if (user.phone.isNotEmpty) Text(user.phone),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: AppSpacing.md),
                   FilledButton.icon(
                     onPressed: widget.onLogout,
                     icon: const Icon(Icons.logout_rounded),
-                    label: const Text('Cerrar sesion'),
+                    label: Text(tr(context, 'auth.closeSession')),
                   ),
                 ],
               ),
@@ -282,66 +290,94 @@ class _LoginScreenState extends State<LoginScreen> {
     return DefaultTabController(
       length: 2,
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(AppSpacing.md),
         children: [
+          Text(
+            tr(context, 'auth.brand'),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  letterSpacing: 0.8,
+                ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            tr(context, 'auth.heroTitle'),
+            style: Theme.of(context).textTheme.displayLarge?.copyWith(
+                  fontSize: 30,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            tr(context, 'auth.heroSubtitle'),
+            style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                  color: AppColors.secondaryText,
+                ),
+          ),
+          const SizedBox(height: AppSpacing.md),
           Card(
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(AppSpacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Acceso y registro',
-                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    tr(context, 'auth.accessAndSignup'),
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: AppSpacing.xxs),
+                  Text(
+                    tr(context, 'auth.candidateOrCompanyPrompt'),
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: AppColors.secondaryText,
+                        ),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
                   if (!isSupabaseReady)
                     Column(
                       children: [
                         Text(
-                          'Configura SUPABASE_URL y SUPABASE_ANON_KEY (o SUPABASE_KEY) para habilitar el ingreso real.',
+                          tr(context, 'auth.configureSupabaseKeys'),
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: AppSpacing.sm),
                       ],
                     ),
-                  if (isSupabaseReady) const SizedBox(height: 12),
-                  const TabBar(
+                  if (isSupabaseReady) const SizedBox(height: AppSpacing.sm),
+                  TabBar(
                     tabs: [
-                      Tab(text: 'Login'),
-                      Tab(text: 'Registro'),
+                      Tab(text: tr(context, 'auth.tabLogin')),
+                      Tab(text: tr(context, 'auth.tabRegister')),
                     ],
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: AppSpacing.md),
                   SizedBox(
                     height: 520,
                     child: TabBarView(
                       children: [
                         _AuthForm(
-                          primaryLabel: 'Entrar',
+                          primaryLabel: tr(context, 'auth.signIn'),
                           isSubmitting: _isSubmitting,
                           fields: [
                             TextField(
                               controller: _loginEmailController,
                               keyboardType: TextInputType.emailAddress,
-                              decoration: const InputDecoration(
-                                labelText: 'Correo',
-                                border: OutlineInputBorder(),
+                              decoration: InputDecoration(
+                                labelText: tr(context, 'auth.email'),
+                                border: const OutlineInputBorder(),
                               ),
                             ),
                             TextField(
                               controller: _loginPasswordController,
                               obscureText: true,
-                              decoration: const InputDecoration(
-                                labelText: 'Contrasena',
-                                border: OutlineInputBorder(),
+                              decoration: InputDecoration(
+                                labelText: tr(context, 'auth.password'),
+                                border: const OutlineInputBorder(),
                               ),
                             ),
                             CheckboxListTile(
                               value: _rememberMe,
                               contentPadding: EdgeInsets.zero,
-                              title: const Text('Recordarme'),
+                              title: Text(tr(context, 'auth.rememberMe')),
                               onChanged: _isSubmitting
                                   ? null
                                   : (value) {
@@ -366,20 +402,20 @@ class _LoginScreenState extends State<LoginScreen> {
                         ),
                         _AuthForm(
                           primaryLabel: _registerMode == _RegisterMode.jobSeeker
-                              ? 'Crear cuenta'
-                              : 'Enviar interes',
+                              ? tr(context, 'auth.createAccount')
+                              : tr(context, 'auth.sendInterest'),
                           isSubmitting: _isSubmitting,
                           fields: [
                             SegmentedButton<_RegisterMode>(
-                              segments: const [
+                              segments: [
                                 ButtonSegment<_RegisterMode>(
                                   value: _RegisterMode.jobSeeker,
-                                  label: Text('Busco empleo'),
+                                  label: Text(tr(context, 'auth.seekJob')),
                                   icon: Icon(Icons.person_search_rounded),
                                 ),
                                 ButtonSegment<_RegisterMode>(
                                   value: _RegisterMode.employer,
-                                  label: Text('Busco empleados'),
+                                  label: Text(tr(context, 'auth.seekCandidates')),
                                   icon: Icon(Icons.business_center_rounded),
                                 ),
                               ],
@@ -398,72 +434,72 @@ class _LoginScreenState extends State<LoginScreen> {
                             if (_registerMode == _RegisterMode.jobSeeker) ...[
                               TextField(
                                 controller: _registerNameController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Nombre',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.firstName'),
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                               TextField(
                                 controller: _registerLastNameController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Apellido',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.lastName'),
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                               TextField(
                                 controller: _registerEmailController,
                                 keyboardType: TextInputType.emailAddress,
-                                decoration: const InputDecoration(
-                                  labelText: 'Correo',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.email'),
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                               TextField(
                                 controller: _registerPhoneController,
                                 keyboardType: TextInputType.phone,
-                                decoration: const InputDecoration(
-                                  labelText: 'Telefono',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.phone'),
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                               TextField(
                                 controller: _registerPasswordController,
                                 obscureText: true,
-                                decoration: const InputDecoration(
-                                  labelText: 'Contrasena',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.password'),
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                             ] else ...[
                               TextField(
                                 controller: _companyNameController,
-                                decoration: const InputDecoration(
-                                  labelText: 'Nombre de la empresa',
-                                  border: OutlineInputBorder(),
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.companyName'),
+                                  border: const OutlineInputBorder(),
                                 ),
                               ),
                               TextField(
                                 controller: _companyEmailController,
                                 keyboardType: TextInputType.emailAddress,
                                 decoration: InputDecoration(
-                                  labelText: 'Correo electronico',
+                                  labelText: tr(context, 'auth.companyEmail'),
                                   border: const OutlineInputBorder(),
-                                  errorText: _companyEmailError,
+                                  errorText: _companyEmailError(context),
                                 ),
                               ),
                               TextField(
                                 controller: _companyPhoneController,
                                 keyboardType: TextInputType.phone,
                                 decoration: InputDecoration(
-                                  labelText: 'Telefono',
+                                  labelText: tr(context, 'auth.companyPhone'),
                                   border: const OutlineInputBorder(),
-                                  errorText: _companyPhoneError,
+                                  errorText: _companyPhoneError(context),
                                 ),
                               ),
                             ],
                           ],
                           helper: _registerMode == _RegisterMode.employer
-                              ? 'Las funcionalidades para empresas estan en desarrollo. Si dejas tus datos, te contactaremos para colaborar con Job-Friends.'
+                              ? tr(context, 'auth.companyFeaturesInProgress')
                               : null,
                           onSubmit: _registerMode == _RegisterMode.jobSeeker
                               ? (_canSubmitRegister
@@ -519,19 +555,26 @@ class _AuthForm extends StatelessWidget {
     return ListView.separated(
       physics: const NeverScrollableScrollPhysics(),
       itemCount: fields.length + 2,
-      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.sm),
       itemBuilder: (context, index) {
         if (index < fields.length) {
           return fields[index];
         }
 
         if (index == fields.length) {
-          return helper != null ? Text(helper!) : const SizedBox.shrink();
+          return helper != null
+              ? Text(
+                  helper!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.secondaryText,
+                      ),
+                )
+              : const SizedBox.shrink();
         }
 
         return FilledButton(
           onPressed: onSubmit,
-          child: Text(isSubmitting ? 'Procesando...' : primaryLabel),
+          child: Text(isSubmitting ? tr(context, 'common.processing') : primaryLabel),
         );
       },
     );

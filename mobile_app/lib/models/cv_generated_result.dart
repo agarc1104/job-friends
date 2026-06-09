@@ -16,7 +16,7 @@ class CvGeneratedResult {
   factory CvGeneratedResult.fromMap(Map<String, dynamic> data) {
     return CvGeneratedResult(
       fileName: data['file_name']?.toString() ?? '',
-      outputFormat: data['output_format']?.toString() ?? 'docx',
+      outputFormat: data['output_format']?.toString() ?? 'pdf',
       publicUrl: data['public_url']?.toString() ?? '',
       storagePath: data['storage_path']?.toString() ?? '',
       source: data['source']?.toString() ?? 'ai_generated',

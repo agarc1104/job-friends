@@ -191,56 +191,65 @@ def _invoke_supabase_edge_function(function_name: str, payload: dict[str, Any]) 
     return result
 
 
-def _extract_gemini_text(response_data: dict[str, Any]) -> str:
-    candidates = response_data.get("candidates")
-    if not candidates:
+def _extract_deepseek_text(response_data: dict[str, Any]) -> str:
+    choices = response_data.get("choices")
+    if not isinstance(choices, list) or not choices:
         return ""
 
-    parts = candidates[0].get("content", {}).get("parts", [])
-    return "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+    best_text = ""
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip()
+        else:
+            text = ""
+        if len(text) > len(best_text):
+            best_text = text
+
+    return best_text
 
 
-def _call_gemini(prompt: str, temperature: float = 0.6, max_output_tokens: int = 1024) -> str:
-    if not settings.gemini_api_key:
-        raise ValueError("GEMINI_API_KEY no configurada en el servidor.")
+def _call_deepseek(prompt: str, temperature: float = 0.6, max_output_tokens: int = 1024) -> str:
+    if not settings.deepseek_api_key:
+        raise ValueError("DEEPSEEK_API_KEY no configurada en el servidor.")
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": temperature,
-            "topP": 0.9,
-            "maxOutputTokens": max_output_tokens,
-        },
-    }
-
-    models_to_try = [settings.gemini_model] + [
-        m for m in settings.gemini_fallback_models if m != settings.gemini_model
+    models_to_try = [settings.deepseek_model] + [
+        m for m in settings.deepseek_fallback_models if m != settings.deepseek_model
     ]
+    base_url = settings.deepseek_base_url.rstrip("/")
 
     for model_name in models_to_try:
-        url = (
-            f"https://generativelanguage.googleapis.com/"
-            f"{settings.gemini_api_version}/models/{model_name}:generateContent"
-        )
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_output_tokens,
+        }
+        url = f"{base_url}/chat/completions"
         try:
             response = httpx.post(
                 url,
                 json=payload,
-                headers={"x-goog-api-key": settings.gemini_api_key},
+                headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
                 timeout=45.0,
             )
             response.raise_for_status()
-            text = _extract_gemini_text(response.json())
+            text = _extract_deepseek_text(response.json())
             if text:
                 return text
         except httpx.HTTPStatusError as ex:
             if ex.response.status_code == 404:
                 continue
-            raise ValueError(f"Gemini devolvio HTTP {ex.response.status_code}.") from None
+            raise ValueError(f"DeepSeek devolvio HTTP {ex.response.status_code}.") from None
         except httpx.HTTPError as ex:
-            raise ValueError(f"No fue posible conectar con Gemini: {ex}") from None
+            raise ValueError(f"No fue posible conectar con DeepSeek: {ex}") from None
 
-    raise ValueError("No fue posible obtener respuesta de Gemini.")
+    raise ValueError("No fue posible obtener respuesta de DeepSeek.")
 
 
 def _save_monetization_event(payload: MonetizationEventRequest) -> tuple[bool, str]:
@@ -350,7 +359,7 @@ def cv_assist(payload: CvAssistRequest) -> CvAssistResponse:
     )
 
     try:
-        suggestion = _call_gemini(prompt, temperature=0.5, max_output_tokens=1400)
+        suggestion = _call_deepseek(prompt, temperature=0.5, max_output_tokens=1400)
     except ValueError as ex:
         raise HTTPException(status_code=400, detail=str(ex)) from None
 
@@ -435,7 +444,7 @@ def interview_reply(payload: InterviewRequest) -> InterviewResponse:
     )
 
     try:
-        reply = _call_gemini(prompt, temperature=0.6, max_output_tokens=1024)
+        reply = _call_deepseek(prompt, temperature=0.6, max_output_tokens=1024)
     except ValueError as ex:
         _inc("interview_reply_error")
         raise HTTPException(status_code=400, detail=str(ex)) from None
@@ -660,8 +669,8 @@ def readiness() -> JSONResponse:
         missing.append("SUPABASE_URL")
     if not settings.supabase_key:
         missing.append("SUPABASE_KEY")
-    if not settings.gemini_api_key:
-        missing.append("GEMINI_API_KEY")
+    if not settings.deepseek_api_key:
+        missing.append("DEEPSEEK_API_KEY")
     if not settings.serpapi_api_key:
         missing.append("SERPAPI_API_KEY")
     if not settings.admob_android_banner_id:

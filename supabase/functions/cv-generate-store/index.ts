@@ -1,13 +1,61 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
-import { callGeminiWithFallback } from "../_shared/gemini.ts";
+import { callDeepSeekWithFallback } from "../_shared/gemini.ts";
 import { Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "https://esm.sh/docx@8.5.0";
 
 const CV_BUCKET = "applicant-cvs";
 const CV_METADATA_TABLE = "ApplicantCVs";
 
 type ProfileData = Record<string, string>;
+type SupportedLanguage = "es" | "en" | "pt" | "fr" | "de" | "it";
+
+function resolveSupportedLanguage(languageCode: unknown, locale: unknown): SupportedLanguage {
+  const fromCode = String(languageCode ?? "").trim().toLowerCase();
+  const fromLocale = String(locale ?? "").trim().toLowerCase();
+  const candidate = fromCode || fromLocale;
+  const normalized = candidate.replace("_", "-").split("-")[0];
+  if (["es", "en", "pt", "fr", "de", "it"].includes(normalized)) {
+    return normalized as SupportedLanguage;
+  }
+  return "es";
+}
+
+function languageDisplayName(language: SupportedLanguage): string {
+  switch (language) {
+    case "en":
+      return "English";
+    case "pt":
+      return "Portuguese";
+    case "fr":
+      return "French";
+    case "de":
+      return "German";
+    case "it":
+      return "Italian";
+    case "es":
+    default:
+      return "Spanish";
+  }
+}
+
+function babelLanguageFor(language: SupportedLanguage): string {
+  switch (language) {
+    case "en":
+      return "english";
+    case "pt":
+      return "portuguese";
+    case "fr":
+      return "french";
+    case "de":
+      return "ngerman";
+    case "it":
+      return "italian";
+    case "es":
+    default:
+      return "spanish";
+  }
+}
 
 function logCvTrace(stage: string, detail: Record<string, unknown> = {}): void {
   const payload = {
@@ -122,9 +170,89 @@ function looksPersonalizedForUser(value: string, fullName: string, email: string
   return hasEmail && hasNameToken && !hasPlaceholderSignals(normalizedLatex);
 }
 
+function toSafeLatexInline(value: string): string {
+  return normalizeText(value);
+}
+
+function adaptCventryForNarrowColumns(latex: string): { latex: string; replacements: number } {
+  const cventryPattern = /\\cventry\{([^{}]*)\}\{([^{}]*)\}\{([^{}]*)\}\{([^{}]*)\}\{([^{}]*)\}\{([\s\S]*?)\}/g;
+  let replacements = 0;
+
+  const updated = latex.replace(
+    cventryPattern,
+    (_match: string, date: string, role: string, company: string, location: string, extra: string, detail: string) => {
+      const dateText = toSafeLatexInline(date) || "";
+      const roleText = toSafeLatexInline(role);
+      const companyText = toSafeLatexInline(company);
+      const locationText = toSafeLatexInline(location);
+      const extraText = toSafeLatexInline(extra);
+      const detailText = toSafeLatexInline(detail);
+
+      const headlineParts = [
+        roleText ? `\\textbf{${roleText}}` : "",
+        companyText,
+        locationText,
+        extraText,
+      ].filter((part) => part.length > 0);
+
+      const body = [headlineParts.join(" --- "), detailText]
+        .filter((part) => part.length > 0)
+        .join("\\\\");
+
+      replacements += 1;
+      return `\\cvitem{${dateText}}{${body || "Sin detalle"}}`;
+    },
+  );
+
+  return { latex: updated, replacements };
+}
+
+function hardenTwoColumnLayout(latex: string): { latex: string; changed: boolean; cventryReplacements: number } {
+  if (!/\\begin\{paracol\}\{2\}/i.test(latex)) {
+    return { latex, changed: false, cventryReplacements: 0 };
+  }
+
+  let updated = latex;
+  let changed = false;
+
+  if (!/\\columnratio\{/i.test(updated)) {
+    updated = updated.replace(/\\usepackage\{paracol\}\s*/i, "\\usepackage{paracol}\n\\columnratio{0.65,0.35}\n");
+    changed = true;
+  }
+
+  if (!/\\setlength\{\\columnsep\}/i.test(updated)) {
+    updated = updated.replace(/\\begin\{document\}\s*/i, "\\begin{document}\n\\setlength{\\columnsep}{1.2cm}\n");
+    changed = true;
+  }
+
+  const hardenedBeginParacol =
+    "\\begin{paracol}{2}\n" +
+    "\\sloppy\n" +
+    "\\setlength{\\emergencystretch}{3em}\n" +
+    "\\setlength{\\hintscolumnwidth}{0.17\\linewidth}\n" +
+    "\\setlength{\\separatorcolumnwidth}{0.03\\linewidth}\n" +
+    "\\recomputelengths\n";
+
+  if (!/\\recomputelengths/i.test(updated)) {
+    updated = updated.replace(/\\begin\{paracol\}\{2\}\s*/i, hardenedBeginParacol);
+    changed = true;
+  }
+
+  const cventryAdaptation = adaptCventryForNarrowColumns(updated);
+  if (cventryAdaptation.replacements > 0) {
+    changed = true;
+  }
+
+  return {
+    latex: cventryAdaptation.latex,
+    changed,
+    cventryReplacements: cventryAdaptation.replacements,
+  };
+}
+
 function sanitizeLatexForCompilation(latex: string): string {
   // moderncv \phone can break with malformed AI output. Preserve digits but render as plain extrainfo.
-  return latex
+  const sanitized = latex
     .replace(/^\s*\\usepackage(?:\[[^\]]*\])?\{noto(?:-sans)?\}\s*\n?/gim, "")
     .replace(/^\s*\\usepackage\[[^\]]*\]\{noto\}\s*\n?/gim, "")
     .replace(/^\s*\\usepackage\{fontspec\}\s*\n?/gim, "")
@@ -151,6 +279,14 @@ function sanitizeLatexForCompilation(latex: string): string {
     .replace(/^\s*\\photo(?:\[[^\]]*\])?(?:\[[^\]]*\])?\{[^}]*\}\s*\n?/gim, "")
     // \cvsection is not a valid moderncv command; the correct command is \section.
     .replace(/\\cvsection\{/g, "\\section{");
+
+  const hardened = hardenTwoColumnLayout(sanitized);
+  logCvTrace("latex.two_columns_hardened", {
+    changed: hardened.changed,
+    cventryReplacements: hardened.cventryReplacements,
+  });
+
+  return hardened.latex;
 }
 
 function verifyVisualCompliance(
@@ -187,7 +323,12 @@ function verifyVisualCompliance(
   return { ok: missing.length === 0, missing };
 }
 
-async function buildLatex(fullName: string, email: string, profileData: ProfileData): Promise<string> {
+async function buildLatex(
+  fullName: string,
+  email: string,
+  profileData: ProfileData,
+  language: SupportedLanguage,
+): Promise<string> {
   const phone = normalizeText(profileData.phone);
   const linkedin = normalizeText(profileData.linkedin);
   const targetRoles = normalizeText(profileData.target_roles) || "Profesional";
@@ -206,7 +347,14 @@ async function buildLatex(fullName: string, email: string, profileData: ProfileD
     rawPalette === "verde_moderno" ? "green" : rawPalette === "gris_ejecutivo" ? "grey" : "blue";
 
   const rawColumns = normalizeText(profileData.cv_columns).toLowerCase();
-  const useTwoColumns = rawColumns === "dos_columnas";
+  const useTwoColumns = false;
+  const languageName = languageDisplayName(language);
+  const babelLanguage = babelLanguageFor(language);
+
+  logCvTrace("buildLatex.columns_forced", {
+    requestedColumns: rawColumns || "(empty)",
+    effectiveColumns: "una_columna",
+  });
 
   const twoColumnsSection = useTwoColumns
     ? "DISEÑO DE DOS COLUMNAS (OBLIGATORIO):\n" +
@@ -216,7 +364,8 @@ async function buildLatex(fullName: string, email: string, profileData: ProfileD
       "- Agrega \\usepackage{paracol} en el preámbulo.\n" +
       "- Usa \\begin{paracol}{2} antes del contenido y \\switchcolumn para cambiar de columna.\n" +
       "- Cierra con \\end{paracol} al final del cuerpo.\n" +
-      "- Mantén la compatibilidad con moderncv: las secciones siguen usando \\section, \\cventry y \\cvitem.\n\n"
+      "- En modo 2 columnas, evita \\cventry para experiencia porque puede desbordar: usa \\cvitem con texto envuelto.\n" +
+      "- Mantén la compatibilidad con moderncv: usa \\section y \\cvitem.\n\n"
     : "";
 
   const jobDescriptionSection = jobDescription
@@ -241,10 +390,11 @@ async function buildLatex(fullName: string, email: string, profileData: ProfileD
     `\\moderncvcolor{${moderncvColor}}\n` +
     "\\usepackage[utf8]{inputenc}\n" +
     "\\usepackage[T1]{fontenc}\n" +
-    "\\usepackage[spanish]{babel}\n" +
+    `\\usepackage[${babelLanguage}]{babel}\n` +
     "\\usepackage[sfdefault]{noto}\n\n" +
     "Reglas obligatorias de formato:\n\n" +
-    "Usa el bloque universal de preámbulo para LaTeX con babel en español y fuentes Noto Sans.\n\n" +
+    `IDIOMA DE SALIDA OBLIGATORIO: TODO el contenido del CV (titulos, resumen, bullets, educacion, habilidades y proyectos) debe estar en ${languageName}.\n\n` +
+    "Usa el bloque universal de preambulo para LaTeX con babel y fuentes Noto Sans.\n\n" +
     "Todos los comandos \\cventry deben tener exactamente SEIS argumentos {...}{...}{...}{...}{...}{...}. Si un dato falta, usa corchetes vacíos {}.\n\n" +
     "Estructura el documento con secciones de: Resumen, Experiencia, Educación, Habilidades y Proyectos.\n\n" +
     "No uses placeholders ni datos ficticios como 'Tu Nombre', 'John Doe', 'Ciudad, País', 'Empresa líder' o similares.\n\n" +
@@ -278,7 +428,7 @@ async function buildLatex(fullName: string, email: string, profileData: ProfileD
     prompt,
   });
 
-  const raw = await callGeminiWithFallback({
+  const raw = await callDeepSeekWithFallback({
     prompt,
     temperature: 0.1,
     maxOutputTokens: 2800,
@@ -325,6 +475,7 @@ async function buildLatex(fullName: string, email: string, profileData: ProfileD
     "CORRECCION OBLIGATORIA: tu salida anterior no cumplio requisitos visuales. Regenera TODO el documento completo y asegúrate de cumplir exactamente estos puntos:\n" +
     `- Debe usar \\documentclass[${fontSizePt},a4paper,sans]{moderncv}.\n` +
     `- Debe usar \\moderncvcolor{${moderncvColor}}.\n` +
+    `- Todo el contenido del CV debe estar estrictamente en ${languageName}.\n` +
     (useTwoColumns
       ? "- Debe incluir \\usepackage{paracol}, \\begin{paracol}{2}, \\switchcolumn y \\end{paracol}.\n"
       : "") +
@@ -335,7 +486,7 @@ async function buildLatex(fullName: string, email: string, profileData: ProfileD
     visualRequiredSubstrings,
   });
 
-  const repairRaw = await callGeminiWithFallback({
+  const repairRaw = await callDeepSeekWithFallback({
     prompt: strictRepairPrompt,
     temperature: 0.0,
     maxOutputTokens: 3200,
@@ -711,13 +862,15 @@ serve(async (req: Request) => {
   }
 
   try {
-    const { full_name, email, profile_data, output_format } = await req.json();
+    const { full_name, email, profile_data, output_format, language_code, locale } = await req.json();
     const profileData = (profile_data ?? {}) as ProfileData;
+    const language = resolveSupportedLanguage(language_code, locale);
 
     logCvTrace("request.payload_parsed", {
       full_name,
       email,
       output_format,
+      language,
       profile_keys: Object.keys(profileData),
       profile_data: profileData,
     });
@@ -769,9 +922,10 @@ serve(async (req: Request) => {
       normalizedEmail,
       fullName,
       normalizedOutputFormat,
+      language,
     });
 
-    const latexContent = await buildLatex(fullName, normalizedEmail, profileData);
+    const latexContent = await buildLatex(fullName, normalizedEmail, profileData, language);
     const sanitizedLatexContent = sanitizeLatexForCompilation(latexContent);
 
     logCvTrace("latex.sanitized", {

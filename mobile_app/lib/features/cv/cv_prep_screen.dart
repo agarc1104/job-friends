@@ -1,12 +1,17 @@
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../../data/jobfriends_repository.dart';
+import '../ads/rewarded_interstitial_ads_service.dart';
+import '../../l10n/localized_text.dart';
 import '../../models/cv_generated_result.dart';
 import '../../models/user_profile.dart';
+import '../../theme/design_system.dart';
 
 class CvPrepScreen extends StatefulWidget {
   const CvPrepScreen({required this.currentUser, super.key});
@@ -19,6 +24,7 @@ class CvPrepScreen extends StatefulWidget {
 
 class _CvPrepScreenState extends State<CvPrepScreen> {
   final _repository = const JobFriendsRepository();
+  final _rewardedInterstitialAds = RewardedInterstitialAdsService.instance;
   final _targetRolesController = TextEditingController();
   final _summaryController = TextEditingController();
   final _experienceController = TextEditingController();
@@ -30,10 +36,10 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
   bool _isGenerating = false;
   bool _isUploading = false;
   String _suggestion = '';
-  String _outputFormat = 'docx';
+  final String _outputFormat = 'pdf';
   String _colorPalette = 'azul_profesional';
   String _fontSize = 'estandar';
-  String _columns = 'una_columna';
+  final String _columns = 'una_columna';
   String _includePhoto = 'sin_foto';
   String _photoBase64 = '';
   String _photoName = '';
@@ -42,9 +48,69 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
   String _cvFileName = '';
   CvGeneratedResult? _uploadedCv;
   CvGeneratedResult? _generatedCv;
+  String? _activeGenerationTraceId;
+  // CV list state
+  List<CvGeneratedResult> _existingCvs = [];
+  bool _isLoadingCvs = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_rewardedInterstitialAds.preload());
+    _loadExistingCvs();
+  }
+
+  Future<void> _loadExistingCvs() async {
+    final user = widget.currentUser;
+    if (user == null) {
+      return;
+    }
+
+    setState(() {
+      _isLoadingCvs = true;
+    });
+
+    try {
+      final cvs = await _repository.fetchAllApplicantCvs(user.email);
+      if (mounted) {
+        setState(() {
+          _existingCvs = cvs;
+        });
+      }
+    } catch (_) {
+      // Silently fail if unable to load CVs
+      _logDebug('Failed to load existing CVs');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingCvs = false;
+        });
+      }
+    }
+  }
+
+  void _logDebug(String message) {
+    debugPrint('[CvPrepScreen] $message');
+  }
+
+  void _logCvTrace(String stage, {Map<String, Object?> detail = const {}}) {
+    final payload = {
+      'ts': DateTime.now().toIso8601String(),
+      'screen': 'cv_prep',
+      'stage': stage,
+      ...detail,
+    };
+    debugPrint('[CV_UI_TRACE] ${jsonEncode(payload)}');
+  }
 
   @override
   void dispose() {
+    _logCvTrace('dispose', detail: {
+      'mounted': mounted,
+      'isGenerating': _isGenerating,
+      'isUploading': _isUploading,
+      'activeTraceId': _activeGenerationTraceId,
+    });
     _targetRolesController.dispose();
     _summaryController.dispose();
     _experienceController.dispose();
@@ -75,7 +141,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
           return;
         }
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se pudo leer la foto seleccionada.')),
+          SnackBar(content: Text(tr(context, 'cv.couldNotReadSelectedPhoto'))),
         );
         return;
       }
@@ -85,7 +151,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
           return;
         }
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('La foto supera el limite de 3MB.')),
+          SnackBar(content: Text(tr(context, 'cv.photoExceedsLimit'))),
         );
         return;
       }
@@ -99,7 +165,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo seleccionar la foto.')),
+        SnackBar(content: Text(tr(context, 'cv.couldNotSelectPhoto'))),
       );
     }
   }
@@ -121,7 +187,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
       if (bytes == null || bytes.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No se pudo leer el archivo seleccionado.')),
+          SnackBar(content: Text(tr(context, 'cv.couldNotReadSelectedFile'))),
         );
         return;
       }
@@ -129,7 +195,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
       if (bytes.length > 10 * 1024 * 1024) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('El archivo supera el limite de 10 MB.')),
+          SnackBar(content: Text(tr(context, 'cv.fileExceedsLimit'))),
         );
         return;
       }
@@ -142,7 +208,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo seleccionar el archivo.')),
+        SnackBar(content: Text(tr(context, 'cv.couldNotSelectFile'))),
       );
     }
   }
@@ -151,7 +217,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     final user = widget.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesion para subir el CV.')),
+        SnackBar(content: Text(tr(context, 'cv.signInToUpload'))),
       );
       return;
     }
@@ -159,7 +225,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     final bytes = _cvFileBytes;
     if (bytes == null || _cvFileName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Selecciona un archivo CV primero.')),
+        SnackBar(content: Text(tr(context, 'cv.selectFileFirst'))),
       );
       return;
     }
@@ -181,8 +247,11 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
         _uploadedCv = result;
       });
 
+      // Reload existing CVs to include the newly uploaded one
+      _loadExistingCvs();
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('CV subido: ${result.fileName}')),
+        SnackBar(content: Text(tr(context, 'cv.uploadedFile', args: {'file': result.fileName}))),
       );
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) return;
@@ -192,7 +261,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo subir el CV.')),
+        SnackBar(content: Text(tr(context, 'cv.couldNotUploadCv'))),
       );
     } finally {
       if (mounted) {
@@ -207,10 +276,15 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     final user = widget.currentUser;
     if (user == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesion para usar CV Prep.')),
+        SnackBar(content: Text(tr(context, 'cv.signInToUse'))),
       );
       return;
     }
+
+    await _rewardedInterstitialAds.maybeShow(
+      placement: 'cv_before_generation',
+      userEmail: user.email,
+    );
 
     setState(() {
       _isGenerating = true;
@@ -246,7 +320,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo generar sugerencia de CV.')),
+        SnackBar(content: Text(tr(context, 'cv.couldNotGenerateSuggestion'))),
       );
     } finally {
       if (mounted) {
@@ -258,10 +332,21 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
   }
 
   Future<void> _generateAndStoreFinalCv() async {
+    final traceId = DateTime.now().microsecondsSinceEpoch.toString();
+    _activeGenerationTraceId = traceId;
+    _logCvTrace('generate_final.requested', detail: {
+      'traceId': traceId,
+      'hasCurrentUser': widget.currentUser != null,
+      'isGenerating': _isGenerating,
+    });
+
     final user = widget.currentUser;
     if (user == null) {
+      _logCvTrace('generate_final.rejected_no_user', detail: {
+        'traceId': traceId,
+      });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Inicia sesion para generar el CV final.')),
+        SnackBar(content: Text(tr(context, 'cv.signInToGenerateFinal'))),
       );
       return;
     }
@@ -269,6 +354,16 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     setState(() {
       _isGenerating = true;
       _generatedCv = null;
+    });
+    _logCvTrace('generate_final.state_set_generating', detail: {
+      'traceId': traceId,
+      'email': user.email,
+      'outputFormat': _outputFormat,
+      'columns': _columns,
+      'palette': _colorPalette,
+      'fontSize': _fontSize,
+      'includePhoto': _includePhoto,
+      'photoBytesBase64Length': _photoBase64.length,
     });
 
     final profileData = <String, String>{
@@ -287,16 +382,39 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
       'cv_photo_base64': _includePhoto == 'con_foto' ? _photoBase64 : '',
       'output_format': _outputFormat,
     };
+    _logCvTrace('generate_final.profile_compiled', detail: {
+      'traceId': traceId,
+      'profileKeys': profileData.keys.toList(),
+      'summaryLength': _summaryController.text.length,
+      'experienceLength': _experienceController.text.length,
+      'skillsLength': _skillsController.text.length,
+      'targetRolesLength': _targetRolesController.text.length,
+    });
 
     try {
+      _logCvTrace('generate_final.repository_call.start', detail: {
+        'traceId': traceId,
+      });
       final generated = await _repository.generateAndStoreCv(
         fullName: user.fullName,
         email: user.email,
         outputFormat: _outputFormat,
         profileData: profileData,
+        traceId: traceId,
       );
+      _logCvTrace('generate_final.repository_call.success', detail: {
+        'traceId': traceId,
+        'fileName': generated.fileName,
+        'storagePath': generated.storagePath,
+        'publicUrlLength': generated.publicUrl.length,
+        'source': generated.source,
+        'outputFormat': generated.outputFormat,
+      });
 
       if (!mounted) {
+        _logCvTrace('generate_final.unmounted_after_repository', detail: {
+          'traceId': traceId,
+        });
         return;
       }
 
@@ -304,7 +422,13 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
         _generatedCv = generated;
       });
 
+      // Reload existing CVs to include the newly generated one
+      _loadExistingCvs();
+
       try {
+        _logCvTrace('generate_final.monetization.start', detail: {
+          'traceId': traceId,
+        });
         await _repository.registerMonetizationEvent(
           eventName: 'cv_generation_success',
           userEmail: user.email,
@@ -316,11 +440,20 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
             'source': generated.source,
           },
         );
+        _logCvTrace('generate_final.monetization.success', detail: {
+          'traceId': traceId,
+        });
       } catch (_) {
+        _logCvTrace('generate_final.monetization.failed', detail: {
+          'traceId': traceId,
+        });
         // No bloquea la UX si falla el tracking.
       }
 
       if (!mounted) {
+        _logCvTrace('generate_final.unmounted_before_snackbar', detail: {
+          'traceId': traceId,
+        });
         return;
       }
 
@@ -331,26 +464,51 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
           ),
         ),
       );
+      _logCvTrace('generate_final.snackbar_shown', detail: {
+        'traceId': traceId,
+      });
     } on JobFriendsRepositoryException catch (error) {
+      _logCvTrace('generate_final.repository_exception', detail: {
+        'traceId': traceId,
+        'message': error.message,
+        'reason': error.reason,
+        'retryable': error.retryable,
+        'suggestedRetrySeconds': error.suggestedRetrySeconds,
+      });
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(error.message)),
       );
-    } catch (_) {
+    } catch (error, stackTrace) {
+      _logCvTrace('generate_final.unexpected_exception', detail: {
+        'traceId': traceId,
+        'error': error.toString(),
+        'stackTrace': stackTrace.toString(),
+      });
       if (!mounted) {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo generar y guardar el CV final.')),
+        SnackBar(content: Text(tr(context, 'cv.couldNotGenerateAndSaveFinal'))),
       );
     } finally {
+      _logCvTrace('generate_final.finally', detail: {
+        'traceId': traceId,
+        'mounted': mounted,
+        'isGeneratingBeforeReset': _isGenerating,
+      });
       if (mounted) {
         setState(() {
           _isGenerating = false;
         });
+        _logCvTrace('generate_final.state_reset', detail: {
+          'traceId': traceId,
+          'isGenerating': _isGenerating,
+        });
       }
+      _activeGenerationTraceId = null;
     }
   }
 
@@ -363,7 +521,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     final uri = Uri.tryParse(generated.publicUrl);
     if (uri == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('La URL del archivo generado no es valida.')),
+        SnackBar(content: Text(tr(context, 'cv.invalidGeneratedFileUrl'))),
       );
       return;
     }
@@ -371,7 +529,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
     final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
     if (!launched && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo abrir la URL del archivo.')),
+        SnackBar(content: Text(tr(context, 'cv.couldNotOpenFileUrl'))),
       );
     }
   }
@@ -387,31 +545,173 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('URL del CV copiada al portapapeles.')),
+      SnackBar(content: Text(tr(context, 'cv.urlCopied'))),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(AppSpacing.md),
       children: [
+        Text(
+          tr(context, 'cv.heroTitle'),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.titleLarge,
+        ),
+        const SizedBox(height: AppSpacing.md),
+        // ---- Existing CVs section ----
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      tr(context, 'cv.myCvs'),
+                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    if (_isLoadingCvs)
+                      const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xxs),
+                Text(
+                  _existingCvs.isEmpty
+                      ? tr(context, 'cv.noneSavedYet')
+                      : tr(context, 'cv.savedCount', args: {'count': _existingCvs.length.toString()}),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.secondaryText,
+                      ),
+                ),
+                if (_existingCvs.isNotEmpty) ...[
+                  const SizedBox(height: AppSpacing.sm),
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _existingCvs.length,
+                    separatorBuilder: (_, __) => const Divider(height: 16),
+                    itemBuilder: (context, index) {
+                      final cv = _existingCvs[index];
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      cv.fileName,
+                                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Wrap(
+                                      spacing: 8,
+                                      children: [
+                                        Chip(
+                                          label: Text(
+                                            cv.outputFormat.toUpperCase(),
+                                            style: Theme.of(context).textTheme.labelSmall,
+                                          ),
+                                        ),
+                                        if (cv.source.isNotEmpty)
+                                          Chip(
+                                            label: Text(
+                                              cv.source == 'ai_generated' ? tr(context, 'cv.sourceAiGenerated') : tr(context, 'cv.sourceUploaded'),
+                                              style: Theme.of(context).textTheme.labelSmall,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              OutlinedButton.icon(
+                                onPressed: () async {
+                                  final uri = Uri.tryParse(cv.publicUrl);
+                                  if (uri == null) return;
+                                  await launchUrl(uri, mode: LaunchMode.externalApplication);
+                                },
+                                icon: const Icon(Icons.download_rounded, size: 18),
+                                label: Text(tr(context, 'cv.download')),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: () async {
+                                  final copiedMessage = tr(context, 'cv.urlCopiedToClipboard');
+                                  await Clipboard.setData(ClipboardData(text: cv.publicUrl));
+                                  if (!context.mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text(copiedMessage)),
+                                  );
+                                },
+                                icon: const Icon(Icons.link_rounded, size: 18),
+                                label: Text(tr(context, 'cv.copyUrl')),
+                              ),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ],
+                const SizedBox(height: AppSpacing.sm),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: (_isUploading || _isGenerating || _isLoadingCvs) ? null : _loadExistingCvs,
+                    icon: const Icon(Icons.refresh_rounded),
+                    label: Text(tr(context, 'cv.refreshList')),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
         // ---- Upload existing CV card ----
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(AppSpacing.md),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Subir CV existente',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  tr(context, 'cv.uploadExistingCv'),
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                 ),
-                const SizedBox(height: 8),
-                const Text('Sube un PDF, DOC o DOCX (max 10 MB) para guardarlo en tu perfil.'),
-                const SizedBox(height: 12),
+                const SizedBox(height: AppSpacing.xxs),
+                Text(
+                  tr(context, 'cv.uploadDescription'),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.secondaryText,
+                      ),
+                ),
+                const SizedBox(height: AppSpacing.sm),
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -419,20 +719,20 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                     OutlinedButton.icon(
                       onPressed: (_isUploading || _isGenerating) ? null : _pickCvFile,
                       icon: const Icon(Icons.upload_file_rounded),
-                      label: Text(_cvFileName.isEmpty ? 'Seleccionar archivo' : _cvFileName),
+                      label: Text(_cvFileName.isEmpty ? tr(context, 'cv.selectFile') : _cvFileName),
                     ),
                     if (_cvFileBytes != null)
                       FilledButton.icon(
                         onPressed: (_isUploading || _isGenerating) ? null : _uploadCv,
                         icon: const Icon(Icons.cloud_upload_rounded),
-                        label: Text(_isUploading ? 'Subiendo...' : 'Subir CV'),
+                        label: Text(_isUploading ? tr(context, 'cv.uploading') : tr(context, 'cv.uploadCv')),
                       ),
                   ],
                 ),
                 if (_uploadedCv != null) ...[
                   const SizedBox(height: 12),
                   SelectableText(
-                    'Subido: ${_uploadedCv!.fileName}\n'
+                    '${tr(context, 'cv.uploaded')}: ${_uploadedCv!.fileName}\n'
                     'URL: ${_uploadedCv!.publicUrl}',
                   ),
                   const SizedBox(height: 8),
@@ -446,7 +746,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                           await launchUrl(uri, mode: LaunchMode.externalApplication);
                         },
                         icon: const Icon(Icons.open_in_new_rounded),
-                        label: const Text('Abrir CV'),
+                        label: Text(tr(context, 'cv.openCv')),
                       ),
                     ],
                   ),
@@ -455,30 +755,33 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
             ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.sm),
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(AppSpacing.md),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'CV Prep con IA',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  tr(context, 'cv.prepWithAi'),
+                  style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: AppSpacing.xxs),
                 Text(
                   widget.currentUser == null
-                      ? 'Inicia sesion para generar sugerencias de CV.'
-                      : 'Generando para ${widget.currentUser!.email}',
+                      ? tr(context, 'cv.signInToGenerateSuggestions')
+                      : tr(context, 'cv.generatingFor', args: {'email': widget.currentUser!.email}),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: AppColors.secondaryText,
+                      ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: AppSpacing.sm),
                 TextField(
                   controller: _targetRolesController,
-                  decoration: const InputDecoration(
-                    labelText: 'Vacantes objetivo',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.targetRoles'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -486,8 +789,8 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _summaryController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Resumen profesional',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.professionalSummary'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -495,8 +798,8 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _experienceController,
                   maxLines: 4,
-                  decoration: const InputDecoration(
-                    labelText: 'Experiencia',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.experience'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -504,8 +807,8 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _educationController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Educacion',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.education'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -513,8 +816,8 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _skillsController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Habilidades',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.skills'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -522,8 +825,8 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _languagesController,
                   maxLines: 2,
-                  decoration: const InputDecoration(
-                    labelText: 'Idiomas',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.languages'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -531,8 +834,8 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _certificationsController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Certificaciones',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.certifications'),
                     border: OutlineInputBorder(),
                   ),
                 ),
@@ -540,44 +843,31 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 TextField(
                   controller: _achievementsController,
                   maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: 'Logros',
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.achievements'),
                     border: OutlineInputBorder(),
                   ),
                 ),
                 const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  value: _outputFormat,
-                  decoration: const InputDecoration(
-                    labelText: 'Formato de salida final',
+                InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.finalOutputFormat'),
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'docx', child: Text('DOCX')),
-                    DropdownMenuItem(value: 'pdf', child: Text('PDF')),
-                  ],
-                  onChanged: _isGenerating
-                      ? null
-                      : (value) {
-                          if (value == null) {
-                            return;
-                          }
-                          setState(() {
-                            _outputFormat = value;
-                          });
-                        },
+                  child: Text(tr(context, 'cv.pdf')),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _colorPalette,
-                  decoration: const InputDecoration(
-                    labelText: 'Paleta visual',
+                  initialValue: _colorPalette,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.colorPalette'),
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'azul_profesional', child: Text('Azul profesional')),
-                    DropdownMenuItem(value: 'verde_moderno', child: Text('Verde moderno')),
-                    DropdownMenuItem(value: 'gris_ejecutivo', child: Text('Gris ejecutivo')),
+                  items: [
+                    DropdownMenuItem(value: 'azul_profesional', child: Text(tr(context, 'cv.palette.blueProfessional'))),
+                    DropdownMenuItem(value: 'verde_moderno', child: Text(tr(context, 'cv.palette.modernGreen'))),
+                    DropdownMenuItem(value: 'gris_ejecutivo', child: Text(tr(context, 'cv.palette.executiveGray'))),
                   ],
                   onChanged: _isGenerating
                       ? null
@@ -592,15 +882,16 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _fontSize,
-                  decoration: const InputDecoration(
-                    labelText: 'Tamano de letra',
+                  initialValue: _fontSize,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.fontSize'),
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'compacta', child: Text('Compacta')),
-                    DropdownMenuItem(value: 'estandar', child: Text('Estandar')),
-                    DropdownMenuItem(value: 'amplia', child: Text('Amplia')),
+                  items: [
+                    DropdownMenuItem(value: 'compacta', child: Text(tr(context, 'cv.font.compact'))),
+                    DropdownMenuItem(value: 'estandar', child: Text(tr(context, 'cv.font.standard'))),
+                    DropdownMenuItem(value: 'amplia', child: Text(tr(context, 'cv.font.wide'))),
                   ],
                   onChanged: _isGenerating
                       ? null
@@ -614,37 +905,24 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                         },
                 ),
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
-                  value: _columns,
-                  decoration: const InputDecoration(
-                    labelText: 'Distribucion',
+                InputDecorator(
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.layout'),
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'una_columna', child: Text('1 columna')),
-                    DropdownMenuItem(value: 'dos_columnas', child: Text('2 columnas')),
-                  ],
-                  onChanged: _isGenerating
-                      ? null
-                      : (value) {
-                          if (value == null) {
-                            return;
-                          }
-                          setState(() {
-                            _columns = value;
-                          });
-                        },
+                  child: Text(tr(context, 'cv.oneColumn')),
                 ),
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
-                  value: _includePhoto,
-                  decoration: const InputDecoration(
-                    labelText: 'Foto en CV',
+                  initialValue: _includePhoto,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: tr(context, 'cv.photoInCv'),
                     border: OutlineInputBorder(),
                   ),
-                  items: const [
-                    DropdownMenuItem(value: 'sin_foto', child: Text('Sin foto')),
-                    DropdownMenuItem(value: 'con_foto', child: Text('Incluir foto')),
+                  items: [
+                    DropdownMenuItem(value: 'sin_foto', child: Text(tr(context, 'cv.noPhoto'))),
+                    DropdownMenuItem(value: 'con_foto', child: Text(tr(context, 'cv.includePhoto'))),
                   ],
                   onChanged: _isGenerating
                       ? null
@@ -670,7 +948,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                       OutlinedButton.icon(
                         onPressed: _isGenerating ? null : _pickPhoto,
                         icon: const Icon(Icons.photo_library_rounded),
-                        label: Text(_photoBase64.isEmpty ? 'Seleccionar foto' : 'Cambiar foto'),
+                        label: Text(_photoBase64.isEmpty ? tr(context, 'cv.selectPhoto') : tr(context, 'cv.changePhoto')),
                       ),
                       if (_photoName.isNotEmpty)
                         Chip(label: Text(_photoName)),
@@ -681,7 +959,7 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                 FilledButton.icon(
                   onPressed: _isGenerating ? null : _generate,
                   icon: const Icon(Icons.auto_awesome_rounded),
-                  label: Text(_isGenerating ? 'Generando...' : 'Generar sugerencia IA'),
+                  label: Text(_isGenerating ? tr(context, 'cv.generating') : tr(context, 'cv.generateAiSuggestion')),
                 ),
                 const SizedBox(height: 10),
                 FilledButton.icon(
@@ -689,31 +967,31 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                   icon: const Icon(Icons.description_rounded),
                   label: Text(
                     _isGenerating
-                        ? 'Procesando...'
-                        : 'Generar y guardar CV final ($_outputFormat)',
+                        ? tr(context, 'common.processing')
+                        : tr(context, 'cv.generateFinal', args: {'format': _outputFormat}),
                   ),
                 ),
               ],
             ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.sm),
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(AppSpacing.md),
             child: SelectableText(
               _suggestion.isEmpty
-                  ? 'Tu sugerencia de CV aparecera aqui al consultar el endpoint /cv/assist.'
+                  ? tr(context, 'cv.suggestionPlaceholder')
                   : _suggestion,
             ),
           ),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: AppSpacing.sm),
         Card(
           child: Padding(
-            padding: const EdgeInsets.all(20),
+            padding: const EdgeInsets.all(AppSpacing.md),
             child: _generatedCv == null
-                ? const Text('Aun no se ha generado un CV final almacenado.')
+              ? Text(tr(context, 'cv.noStoredFinalCv'))
                 : Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -732,12 +1010,12 @@ class _CvPrepScreenState extends State<CvPrepScreen> {
                           FilledButton.icon(
                             onPressed: _openGeneratedCvUrl,
                             icon: const Icon(Icons.download_rounded),
-                            label: const Text('Abrir / descargar CV'),
+                            label: Text(tr(context, 'cv.openOrDownloadCv')),
                           ),
                           OutlinedButton.icon(
                             onPressed: _copyGeneratedCvUrl,
                             icon: const Icon(Icons.link_rounded),
-                            label: const Text('Copiar URL publica'),
+                            label: Text(tr(context, 'cv.copyPublicUrl')),
                           ),
                         ],
                       ),
