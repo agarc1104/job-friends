@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:async';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
@@ -45,6 +44,8 @@ class JobFriendsRepository {
   static const String _cvMetadataTable = 'ApplicantCVs';
   static const String _interviewSessionsTable = 'interview_sessions';
   static const String _interviewMessagesTable = 'interview_messages';
+  static const String _passwordRecoveryRedirectTo = 'jobfriends://auth/recover';
+  static final RegExp _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$');
 
   void _logDebug(String message) {
     if (!kDebugMode) {
@@ -64,37 +65,94 @@ class JobFriendsRepository {
     return Supabase.instance.client;
   }
 
-  String hashPassword(String plainText) {
-    return sha256.convert(utf8.encode(plainText)).toString();
-  }
-
   Future<UserProfile> login({
     required String email,
     required String password,
   }) async {
     final normalizedEmail = email.trim().toLowerCase();
-    Map<String, dynamic>? response;
     try {
-      response = await _client
+      await _client.auth.signInWithPassword(
+        email: normalizedEmail,
+        password: password,
+      );
+    } on AuthException catch (error) {
+      throw JobFriendsRepositoryException(
+        error.message.isEmpty ? 'Credenciales incorrectas.' : error.message,
+      );
+    } catch (_) {
+      throw const JobFriendsRepositoryException('Credenciales incorrectas.');
+    }
+
+    final response = await _loadApplicantProfile(normalizedEmail);
+    return UserProfile.fromMap(response);
+  }
+
+  Future<Map<String, dynamic>> _loadApplicantProfile(String normalizedEmail) async {
+    final rpcPayload = await _tryFetchApplicantProfileViaRpc();
+    if (rpcPayload != null) {
+      return rpcPayload;
+    }
+
+    try {
+      final response = await _client
           .from('Aplicants')
-          .select('Email, Password, First_Name, Last_Name, Phone')
+          .select('Email, First_Name, Last_Name, Phone')
           .eq('Email', normalizedEmail)
           .maybeSingle();
+
+      if (response != null) {
+        return Map<String, dynamic>.from(response);
+      }
     } on PostgrestException catch (error) {
-      throw JobFriendsRepositoryException(
-        'Error al consultar Supabase (${error.code ?? 'sin-codigo'}): ${error.message}',
+      _logDebug(
+        'loadApplicantProfile fallback query failed email="$normalizedEmail" '
+        'code=${error.code ?? 'sin-codigo'} message=${error.message}',
       );
     }
 
-    if (response == null) {
-      throw const JobFriendsRepositoryException('Credenciales incorrectas.');
+    return {
+      'Email': normalizedEmail,
+      'First_Name': '',
+      'Last_Name': '',
+      'Phone': '',
+    };
+  }
+
+  Future<Map<String, dynamic>?> _tryFetchApplicantProfileViaRpc() async {
+    try {
+      final payload = await _client.rpc('current_applicant_profile');
+      return _normalizeApplicantProfilePayload(payload);
+    } on PostgrestException catch (error) {
+      _logDebug(
+        'current_applicant_profile rpc failed code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      return null;
+    } catch (error) {
+      _logDebug('current_applicant_profile rpc unexpected error=$error');
+      return null;
+    }
+  }
+
+  Map<String, dynamic>? _normalizeApplicantProfilePayload(dynamic payload) {
+    if (payload is Map<String, dynamic>) {
+      return payload;
     }
 
-    if ((response['Password'] ?? '').toString() != hashPassword(password)) {
-      throw const JobFriendsRepositoryException('Credenciales incorrectas.');
+    if (payload is Map) {
+      return payload.map((key, value) => MapEntry(key.toString(), value));
     }
 
-    return UserProfile.fromMap(response);
+    if (payload is List && payload.isNotEmpty) {
+      final first = payload.first;
+      if (first is Map<String, dynamic>) {
+        return first;
+      }
+      if (first is Map) {
+        return first.map((key, value) => MapEntry(key.toString(), value));
+      }
+    }
+
+    return null;
   }
 
   Future<UserProfile> register({
@@ -105,40 +163,244 @@ class JobFriendsRepository {
     required String phone,
   }) async {
     final normalizedEmail = email.trim().toLowerCase();
-
-    Map<String, dynamic>? existing;
     try {
-      existing = await _client
-          .from('Aplicants')
-          .select('Email')
-          .eq('Email', normalizedEmail)
-          .maybeSingle();
+      final signUpResponse = await _client.auth.signUp(
+        email: normalizedEmail,
+        password: password,
+      );
+
+      if (signUpResponse.session == null) {
+        await _client.auth.signInWithPassword(
+          email: normalizedEmail,
+          password: password,
+        );
+      }
+    } on AuthException catch (error) {
+      throw JobFriendsRepositoryException(
+        error.message.isEmpty ? 'No se pudo registrar la cuenta.' : error.message,
+      );
     } on PostgrestException catch (error) {
       throw JobFriendsRepositoryException(
-        'Error al consultar Supabase (${error.code ?? 'sin-codigo'}): ${error.message}',
+        'Error al registrar en Supabase (${error.code ?? 'sin-codigo'}): ${error.message}',
       );
-    }
-
-    if (existing != null) {
-      throw const JobFriendsRepositoryException('Ese correo ya existe.');
     }
 
     final payload = {
       'Email': normalizedEmail,
-      'Password': hashPassword(password),
       'First_Name': firstName.trim(),
       'Last_Name': lastName.trim(),
       'Phone': phone.trim(),
     };
 
     try {
-      await _client.from('Aplicants').insert(payload);
+      await _saveApplicantProfile(payload);
     } on PostgrestException catch (error) {
-      throw JobFriendsRepositoryException(
-        'Error al registrar en Supabase (${error.code ?? 'sin-codigo'}): ${error.message}',
+      _logDebug(
+        'register profile save failed email="$normalizedEmail" '
+        'code=${error.code ?? 'sin-codigo'} message=${error.message}',
       );
     }
     return UserProfile.fromMap(payload);
+  }
+
+  Future<void> _saveApplicantProfile(Map<String, String> payload) async {
+    try {
+      await _client.rpc(
+        'save_current_applicant_profile',
+        params: {
+          'first_name': payload['First_Name'] ?? '',
+          'last_name': payload['Last_Name'] ?? '',
+          'phone': payload['Phone'] ?? '',
+        },
+      );
+      return;
+    } on PostgrestException catch (error) {
+      _logDebug(
+        'save_current_applicant_profile rpc failed code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+    } catch (error) {
+      _logDebug('save_current_applicant_profile rpc unexpected error=$error');
+    }
+
+    await _client.from('Aplicants').upsert(payload, onConflict: 'Email');
+  }
+
+  bool _isValidEmail(String value) {
+    final normalized = value.trim().toLowerCase();
+    return normalized.isNotEmpty && _emailPattern.hasMatch(normalized);
+  }
+
+  bool _isValidPhone(String value) {
+    final digits = value.replaceAll(RegExp(r'\D'), '');
+    return digits.length >= 8;
+  }
+
+  Future<UserProfile> updateContactInfo({
+    required UserProfile currentProfile,
+    required String email,
+    required String phone,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final normalizedPhone = phone.trim();
+    final currentEmail = currentProfile.email.trim().toLowerCase();
+
+    if (!_isValidEmail(normalizedEmail)) {
+      throw const JobFriendsRepositoryException('Ingresa un correo valido.');
+    }
+
+    if (!_isValidPhone(normalizedPhone)) {
+      throw const JobFriendsRepositoryException(
+        'Ingresa un telefono valido (minimo 8 digitos).',
+      );
+    }
+
+    if (normalizedEmail != currentEmail) {
+      try {
+        await _client.auth.updateUser(
+          UserAttributes(email: normalizedEmail),
+        );
+      } on AuthException catch (error) {
+        throw JobFriendsRepositoryException(
+          error.message.isEmpty
+              ? 'No se pudo actualizar el correo.'
+              : error.message,
+        );
+      } catch (_) {
+        throw const JobFriendsRepositoryException(
+          'No se pudo actualizar el correo.',
+        );
+      }
+    }
+
+    try {
+      await _invokeFunction(
+        'update-applicant-contact',
+        {
+          'current_email': currentEmail,
+          'new_email': normalizedEmail,
+          'phone': normalizedPhone,
+        },
+      );
+    } on PostgrestException catch (error) {
+      _logDebug(
+        'update_current_applicant_contact rpc failed '
+        'code=${error.code ?? 'sin-codigo'} message=${error.message}',
+      );
+      await _client.from('Aplicants').upsert(
+        {
+          'Email': normalizedEmail,
+          'First_Name': currentProfile.firstName.trim(),
+          'Last_Name': currentProfile.lastName.trim(),
+          'Phone': normalizedPhone,
+        },
+        onConflict: 'Email',
+      );
+    }
+
+    return UserProfile(
+      email: normalizedEmail,
+      firstName: currentProfile.firstName,
+      lastName: currentProfile.lastName,
+      phone: normalizedPhone,
+    );
+  }
+
+  Future<void> logout() async {
+    await _client.auth.signOut();
+  }
+
+  Future<bool> verifyPasswordRecoveryIdentity({
+    required String email,
+    required String fullName,
+    required String phone,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final normalizedFullName = fullName.trim();
+    final normalizedPhone = phone.trim();
+
+    if (normalizedEmail.isEmpty || normalizedFullName.isEmpty || normalizedPhone.isEmpty) {
+      throw const JobFriendsRepositoryException(
+        'Completa correo, nombre completo y telefono.',
+      );
+    }
+
+    final payload = await _invokeFunction(
+      'password-recovery-verify',
+      {
+        'email': normalizedEmail,
+        'full_name': normalizedFullName,
+        'phone': normalizedPhone,
+      },
+    );
+
+    return payload['verified'] == true;
+  }
+
+  Future<void> requestPasswordRecovery({
+    required String email,
+    String redirectTo = _passwordRecoveryRedirectTo,
+  }) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    if (normalizedEmail.isEmpty) {
+      throw const JobFriendsRepositoryException('Ingresa un correo valido.');
+    }
+
+    try {
+      await _client.auth.resetPasswordForEmail(
+        normalizedEmail,
+        redirectTo: redirectTo,
+      );
+    } on AuthException catch (error) {
+      throw JobFriendsRepositoryException(
+        error.message.isEmpty
+            ? 'No se pudo iniciar la recuperacion de contrasena.'
+            : error.message,
+      );
+    } catch (_) {
+      throw const JobFriendsRepositoryException(
+        'No se pudo iniciar la recuperacion de contrasena.',
+      );
+    }
+  }
+
+  Future<void> changePassword({required String newPassword}) async {
+    final normalized = newPassword.trim();
+    if (normalized.length < 8) {
+      throw const JobFriendsRepositoryException(
+        'La nueva contrasena debe tener al menos 8 caracteres.',
+      );
+    }
+
+    try {
+      await _client.auth.updateUser(
+        UserAttributes(password: normalized),
+      );
+    } on AuthException catch (error) {
+      throw JobFriendsRepositoryException(
+        error.message.isEmpty
+            ? 'No se pudo actualizar la contrasena.'
+            : error.message,
+      );
+    } catch (_) {
+      throw const JobFriendsRepositoryException(
+        'No se pudo actualizar la contrasena.',
+      );
+    }
+  }
+
+  Future<void> deleteAccount({String reason = ''}) async {
+    final payload = await _invokeFunction(
+      'account-delete',
+      {
+        'reason': reason.trim(),
+      },
+    );
+
+    if (payload['success'] != true) {
+      throw const JobFriendsRepositoryException(
+        'No se pudo eliminar la cuenta. Intenta de nuevo.',
+      );
+    }
   }
 
   Future<List<ApplicationRecord>> fetchApplications(String email) async {
@@ -470,7 +732,7 @@ class JobFriendsRepository {
     onProgress?.call(
       stage: 'preparing_request',
       progress: 0.2,
-      message: 'Afinando secciones clave: estamos armando la base de tu CV...',
+      message: _cvGenerationProgressMessage(languageCode, stage: 'preparing_request'),
     );
 
     // Primary path for all environments: Supabase Edge Function (Gemini source of truth).
@@ -495,7 +757,7 @@ class JobFriendsRepository {
         onProgress?.call(
           stage: 'invoking_generation',
           progress: 0.55,
-          message: 'Magia IA en proceso: redactando tu CV con enfoque a la vacante...',
+          message: _cvGenerationProgressMessage(languageCode, stage: 'invoking_generation'),
         );
         _logDebug(
           'cv-generate-store invoke start traceId=$resolvedTraceId '
@@ -531,7 +793,11 @@ class JobFriendsRepository {
         onProgress?.call(
           stage: 'retry_wait',
           progress: 0.6,
-          message: 'Hay fila en el generador, pero seguimos: reintentando en ${waitSeconds}s...',
+          message: _cvGenerationProgressMessage(
+            languageCode,
+            stage: 'retry_wait',
+            waitSeconds: waitSeconds,
+          ),
         );
         _logDebug(
           'cv-generate-store retry traceId=$resolvedTraceId '
@@ -543,15 +809,15 @@ class JobFriendsRepository {
 
     if (payload == null) {
       throw lastRetryableError ??
-          const JobFriendsRepositoryException(
-            'No fue posible generar el CV por alta demanda temporal. Intenta nuevamente en 1-2 minutos.',
+          JobFriendsRepositoryException(
+            _cvGenerationProgressMessage(languageCode, stage: 'capacity_error'),
           );
     }
 
     onProgress?.call(
       stage: 'processing_result',
       progress: 0.85,
-      message: 'Ultimo sprint: validando detalles y guardando tu PDF...',
+      message: _cvGenerationProgressMessage(languageCode, stage: 'processing_result'),
     );
 
     final result = CvGeneratedResult.fromMap(payload);
@@ -565,7 +831,7 @@ class JobFriendsRepository {
     onProgress?.call(
       stage: 'completed',
       progress: 1,
-      message: 'Todo listo: tu CV quedo impecable y ya estamos mostrando el resultado.',
+      message: _cvGenerationProgressMessage(languageCode, stage: 'completed'),
     );
 
     debugPrint(
@@ -623,6 +889,125 @@ class JobFriendsRepository {
         return normalized;
       default:
         return 'en';
+    }
+  }
+
+  String _cvGenerationProgressMessage(
+    String languageCode, {
+    required String stage,
+    int? waitSeconds,
+  }) {
+    final normalizedLanguage = _resolveSupportedLanguageCode(languageCode);
+
+    String retryMessage({required String template}) {
+      final seconds = waitSeconds ?? _cvCapacityRetryFallbackDelay.inSeconds;
+      return template.replaceAll('{seconds}', seconds.toString());
+    }
+
+    switch (normalizedLanguage) {
+      case 'es':
+        switch (stage) {
+          case 'preparing_request':
+            return 'Afinando secciones clave: estamos armando la base de tu CV...';
+          case 'invoking_generation':
+            return 'Magia IA en proceso: redactando tu CV con enfoque a la vacante...';
+          case 'retry_wait':
+            return retryMessage(template: 'Hay fila en el generador, pero seguimos: reintentando en {seconds}s...');
+          case 'processing_result':
+            return 'Ultimo sprint: validando detalles y guardando tu PDF...';
+          case 'completed':
+            return 'Todo listo: tu CV quedo impecable y ya estamos mostrando el resultado.';
+          case 'capacity_error':
+            return 'No fue posible generar el CV por alta demanda temporal. Intenta nuevamente en 1-2 minutos.';
+          default:
+            return 'Procesando tu CV...';
+        }
+      case 'pt':
+        switch (stage) {
+          case 'preparing_request':
+            return 'Ajustando secoes-chave: estamos preparando a base do seu CV...';
+          case 'invoking_generation':
+            return 'Magia da IA em andamento: redigindo seu CV com foco na vaga...';
+          case 'retry_wait':
+            return retryMessage(template: 'Ha fila no gerador, mas seguimos: tentando novamente em {seconds}s...');
+          case 'processing_result':
+            return 'Ultima etapa: validando os detalhes e salvando seu PDF...';
+          case 'completed':
+            return 'Tudo pronto: seu CV ficou impecavel e ja estamos exibindo o resultado.';
+          case 'capacity_error':
+            return 'Nao foi possivel gerar o CV por alta demanda temporaria. Tente novamente em 1-2 minutos.';
+          default:
+            return 'Processando seu CV...';
+        }
+      case 'fr':
+        switch (stage) {
+          case 'preparing_request':
+            return 'Ajustement des sections cles: nous preparons la base de votre CV...';
+          case 'invoking_generation':
+            return 'Magie IA en cours: redaction de votre CV ciblee sur le poste...';
+          case 'retry_wait':
+            return retryMessage(template: 'Le generateur est occupe, mais on continue: nouvelle tentative dans {seconds}s...');
+          case 'processing_result':
+            return 'Derniere etape: validation des details et enregistrement de votre PDF...';
+          case 'completed':
+            return 'Tout est pret: votre CV est finalise et nous affichons deja le resultat.';
+          case 'capacity_error':
+            return 'Impossible de generer le CV en raison d\'une forte demande temporaire. Reessayez dans 1-2 minutes.';
+          default:
+            return 'Traitement de votre CV...';
+        }
+      case 'de':
+        switch (stage) {
+          case 'preparing_request':
+            return 'Schluesselabschnitte werden vorbereitet: wir bauen die Grundlage fuer Ihren Lebenslauf...';
+          case 'invoking_generation':
+            return 'KI-Magie laeuft: Ihr Lebenslauf wird gezielt fuer die Stelle erstellt...';
+          case 'retry_wait':
+            return retryMessage(template: 'Der Generator ist ausgelastet, wir machen weiter: neuer Versuch in {seconds}s...');
+          case 'processing_result':
+            return 'Letzter Schritt: Details pruefen und Ihr PDF speichern...';
+          case 'completed':
+            return 'Fertig: Ihr Lebenslauf ist bereit und das Ergebnis wird jetzt angezeigt.';
+          case 'capacity_error':
+            return 'Der Lebenslauf konnte wegen hoher temporaerer Auslastung nicht erstellt werden. Bitte in 1-2 Minuten erneut versuchen.';
+          default:
+            return 'Ihr Lebenslauf wird verarbeitet...';
+        }
+      case 'it':
+        switch (stage) {
+          case 'preparing_request':
+            return 'Stiamo rifinendo le sezioni chiave: prepariamo la base del tuo CV...';
+          case 'invoking_generation':
+            return 'Magia IA in corso: stiamo scrivendo il tuo CV con focus sulla posizione...';
+          case 'retry_wait':
+            return retryMessage(template: 'Il generatore e in coda, ma continuiamo: nuovo tentativo tra {seconds}s...');
+          case 'processing_result':
+            return 'Ultimo passaggio: validiamo i dettagli e salviamo il tuo PDF...';
+          case 'completed':
+            return 'Tutto pronto: il tuo CV e impeccabile e stiamo gia mostrando il risultato.';
+          case 'capacity_error':
+            return 'Non e stato possibile generare il CV per alta domanda temporanea. Riprova tra 1-2 minuti.';
+          default:
+            return 'Elaborazione del tuo CV...';
+        }
+      case 'en':
+      default:
+        switch (stage) {
+          case 'preparing_request':
+            return 'Refining key sections: we are preparing the foundation of your CV...';
+          case 'invoking_generation':
+            return 'AI magic in progress: drafting your CV with focus on the vacancy...';
+          case 'retry_wait':
+            return retryMessage(template: 'The generator is busy, but we are on it: retrying in {seconds}s...');
+          case 'processing_result':
+            return 'Final sprint: validating details and saving your PDF...';
+          case 'completed':
+            return 'All set: your CV looks great and we are showing the result now.';
+          case 'capacity_error':
+            return 'We could not generate the CV due to temporary high demand. Please try again in 1-2 minutes.';
+          default:
+            return 'Processing your CV...';
+        }
     }
   }
 
