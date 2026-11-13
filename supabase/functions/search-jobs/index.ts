@@ -97,6 +97,30 @@ function deduplicateJobs(jobs: NormalizedJob[]): NormalizedJob[] {
   return jobs.filter((j) => { if (seen.has(j.job_id)) return false; seen.add(j.job_id); return true; });
 }
 
+async function maybeRewardReferralForFirstSearch(userEmail: string): Promise<void> {
+  const email = userEmail.trim().toLowerCase();
+  if (!email || email === "__anon__") {
+    return;
+  }
+
+  const sb = getSupabaseAdmin();
+  if (!sb) {
+    return;
+  }
+
+  try {
+    const { error } = await sb.rpc("mark_referral_first_search_completed", {
+      p_referred_email: email,
+    });
+
+    if (error) {
+      console.warn("[search-jobs] referral reward rpc failed", error.message);
+    }
+  } catch (error) {
+    console.warn("[search-jobs] referral reward unexpected error", String(error));
+  }
+}
+
 // ============================================================
 // SerpAPI helpers (preservados del flujo original)
 // ============================================================
@@ -549,6 +573,7 @@ serve(async (req: Request) => {
           if (newJobs.length > 0) jobsToReturn = newJobs;
           // Si todos fueron vistos → devolver caché completo para no dejar pantalla vacía
         }
+        await maybeRewardReferralForFirstSearch(userEmail);
         await markJobsSeen(userEmail || "__anon__", jobsToReturn.map((j) => j.job_id));
         return new Response(
           JSON.stringify({ jobs: jobsToReturn, next_page_token: null, source_used: "cache" }),
@@ -595,6 +620,9 @@ serve(async (req: Request) => {
     // ----------------------------------------------------------
     // PASO 7: MARK SEEN + next_page_token + RETURN
     // ----------------------------------------------------------
+    if (!nextPageToken) {
+      await maybeRewardReferralForFirstSearch(userEmail);
+    }
     await markJobsSeen(userEmail || "__anon__", jobsToReturn.map((j) => j.job_id));
 
     const outNextPageToken: string | null = serpOutNextToken;

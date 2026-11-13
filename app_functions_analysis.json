@@ -1,0 +1,1866 @@
+{
+  "project_info": {
+    "name": "Job-Friends",
+    "version": "1.0.0",
+    "description": "Plataforma multiplataforma de empleabilidad impulsada por IA que ofrece búsqueda de ofertas laborales, asistente inteligente de creación y optimización de CVs (LaTeX/PDF/DOCX), simulación conversacional de entrevistas con coaching en tiempo real, gestión de postulaciones y sistema de referidos con monetización publicitaria.",
+    "architecture_layers": {
+      "desktop_and_web_ui": "Aplicación de escritorio y web creada con Python Flet (main.py).",
+      "mobile_api_gateway": "API REST local/proxy desarrollada con FastAPI (mobile_api.py) para scraping web, métricas y puente hacia Supabase.",
+      "edge_functions_serverless": "Funciones Edge en Deno/TypeScript alojadas en Supabase (supabase/functions/) para IA, búsqueda y autenticación.",
+      "mobile_app": "Aplicación móvil nativa en Flutter/Dart (mobile_app/) compatible con iOS y Android.",
+      "database_and_services": "Supabase (PostgreSQL, Supabase Auth, Storage), DeepSeek AI, SerpAPI y Google AdMob."
+    },
+    "supported_languages": [
+      "es",
+      "en",
+      "pt",
+      "fr",
+      "de",
+      "it"
+    ]
+  },
+  "modules": [
+    {
+      "module_name": "Desktop & Web UI (Flet)",
+      "file_path": "main.py",
+      "technology": "Python / Flet",
+      "description": "Interfaz de usuario reactiva para escritorio y web construida con Flet. Gestiona vistas de login, registro, búsqueda de empleos, diálogo interactivo de CV con IA, visor y compilación de PDF/DOCX, simulación de entrevistas y enriquecimiento de vacantes.",
+      "functions": [
+        {
+          "name": "hash_password",
+          "parameters": [
+            "plain: str"
+          ],
+          "return_type": "str",
+          "description": "Calcula el hash SHA-256 en formato hexadecimal de la contraseña ingresada."
+        },
+        {
+          "name": "save_credentials",
+          "parameters": [
+            "email: str",
+            "password: str"
+          ],
+          "return_type": "None",
+          "description": "Guarda de forma persistente las credenciales del usuario en el archivo local 'saved_credentials.json'."
+        },
+        {
+          "name": "load_credentials",
+          "parameters": [],
+          "return_type": "dict | None",
+          "description": "Lee las credenciales almacenadas localmente en 'saved_credentials.json' para auto-login."
+        },
+        {
+          "name": "remove_saved_credentials",
+          "parameters": [],
+          "return_type": "None",
+          "description": "Elimina el archivo local de credenciales guardadas al cerrar sesión."
+        },
+        {
+          "name": "logout_user",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Cierra la sesión del usuario actual, limpia el estado en memoria, borra credenciales guardadas y redirige a la vista de login."
+        },
+        {
+          "name": "normalize_ai_cv_visual_choice",
+          "parameters": [
+            "raw_value",
+            "options",
+            "default_id"
+          ],
+          "return_type": "str",
+          "description": "Normaliza una opción visual seleccionada para el diseño del CV con base en una lista de opciones permitidas."
+        },
+        {
+          "name": "get_ai_cv_visual_label",
+          "parameters": [
+            "selected_id",
+            "options",
+            "default_id"
+          ],
+          "return_type": "str",
+          "description": "Obtiene la etiqueta legible para el usuario de una opción visual de diseño de CV."
+        },
+        {
+          "name": "normalize_ai_cv_color_palette",
+          "parameters": [
+            "color_palette: str"
+          ],
+          "return_type": "str",
+          "description": "Normaliza la paleta de colores del CV (modern_blue, elegant_teal, minimalist_gray, creative_purple, classic_navy)."
+        },
+        {
+          "name": "normalize_ai_cv_font_size",
+          "parameters": [
+            "font_size: str"
+          ],
+          "return_type": "str",
+          "description": "Normaliza el tamaño de tipografía del documento de CV (compact_10pt, standard_11pt, readable_12pt)."
+        },
+        {
+          "name": "normalize_ai_cv_columns",
+          "parameters": [
+            "columns: str"
+          ],
+          "return_type": "str",
+          "description": "Normaliza la estructura de columnas del CV (single_column o two_columns)."
+        },
+        {
+          "name": "normalize_ai_cv_photo_option",
+          "parameters": [
+            "photo_option: str"
+          ],
+          "return_type": "str",
+          "description": "Normaliza la preferencia de visualización de foto en el CV (no_photo o with_photo)."
+        },
+        {
+          "name": "normalize_ai_cv_output_format",
+          "parameters": [
+            "output_format: str"
+          ],
+          "return_type": "str",
+          "description": "Valida y normaliza el formato de exportación solicitado (pdf o docx)."
+        },
+        {
+          "name": "sanitize_storage_name",
+          "parameters": [
+            "value: str"
+          ],
+          "return_type": "str",
+          "description": "Limpia y sanitiza cadenas de texto para utilizarlas como nombres de archivo y rutas válidas en Supabase Storage."
+        },
+        {
+          "name": "get_cv_content_type",
+          "parameters": [
+            "file_name: str"
+          ],
+          "return_type": "str",
+          "description": "Retorna el MIME type correspondiente para el archivo de CV (.pdf o .docx)."
+        },
+        {
+          "name": "is_supported_cv_file",
+          "parameters": [
+            "file_name: str"
+          ],
+          "return_type": "bool",
+          "description": "Comprueba si la extensión del archivo subido corresponde a un formato de CV admitido (PDF o DOCX)."
+        },
+        {
+          "name": "is_supported_photo_file",
+          "parameters": [
+            "file_name: str"
+          ],
+          "return_type": "bool",
+          "description": "Comprueba si la extensión de la foto corresponde a un formato de imagen permitido (PNG, JPG, JPEG, WEBP)."
+        },
+        {
+          "name": "extract_profile_photo_bytes",
+          "parameters": [
+            "profile_data: dict"
+          ],
+          "return_type": "bytes | None",
+          "description": "Decodifica la imagen de perfil del candidato almacenada en base64 dentro de su perfil."
+        },
+        {
+          "name": "build_gemini_cv_prompt",
+          "parameters": [
+            "profile_data: dict",
+            "full_name: str",
+            "email: str"
+          ],
+          "return_type": "str",
+          "description": "Construye el prompt estructurado para que el modelo de IA genere el CV en formato HTML optimizado para ATS."
+        },
+        {
+          "name": "canonicalize_cv_heading",
+          "parameters": [
+            "line: str"
+          ],
+          "return_type": "str",
+          "description": "Normaliza los encabezados de sección del CV para garantizar consistencia semántica."
+        },
+        {
+          "name": "normalize_cv_items",
+          "parameters": [
+            "raw_items: list"
+          ],
+          "return_type": "list",
+          "description": "Limpia, formatea y normaliza listas de viñetas, experiencias o habilidades para el CV."
+        },
+        {
+          "name": "parse_gemini_json_output",
+          "parameters": [
+            "raw_text: str"
+          ],
+          "return_type": "dict | None",
+          "description": "Parsea la respuesta de la IA cuando retorna bloques JSON estructurados, eliminando delimitadores de código markdown."
+        },
+        {
+          "name": "build_local_cv_structure",
+          "parameters": [
+            "profile_data: dict",
+            "full_name: str",
+            "email: str"
+          ],
+          "return_type": "dict",
+          "description": "Genera una estructura de respaldo para el CV a partir de los datos locales del perfil si falla la llamada al modelo de IA."
+        },
+        {
+          "name": "normalize_cv_structure",
+          "parameters": [
+            "raw_cv: dict",
+            "profile_data: dict",
+            "full_name: str",
+            "email: str"
+          ],
+          "return_type": "dict",
+          "description": "Garantiza que la estructura del CV cumpla con todas las secciones mínimas requeridas antes de su renderizado."
+        },
+        {
+          "name": "looks_like_structured_cv_code",
+          "parameters": [
+            "cv_data: Any"
+          ],
+          "return_type": "bool",
+          "description": "Valida si los datos corresponden a un objeto de CV estructurado válido con sus secciones obligatorias."
+        },
+        {
+          "name": "extract_cv_html_from_gemini_text",
+          "parameters": [
+            "raw_text: str"
+          ],
+          "return_type": "str",
+          "description": "Extrae el bloque de código HTML del CV a partir del texto de respuesta del modelo de lenguaje."
+        },
+        {
+          "name": "looks_like_cv_html",
+          "parameters": [
+            "html: str"
+          ],
+          "return_type": "bool",
+          "description": "Comprueba mediante expresiones regulares que la cadena contenga las etiquetas básicas de un documento HTML de CV."
+        },
+        {
+          "name": "inject_photo_into_html",
+          "parameters": [
+            "html: str",
+            "photo_bytes: bytes"
+          ],
+          "return_type": "str",
+          "description": "Inyecta la fotografía del usuario como Data URI en base64 en la etiqueta de imagen correspondiente del HTML."
+        },
+        {
+          "name": "_sanitize_html_for_xhtml2pdf",
+          "parameters": [
+            "html: str"
+          ],
+          "return_type": "str",
+          "description": "Sanitiza y adapta reglas CSS para que el renderizador xhtml2pdf/pisa no falle durante la conversión."
+        },
+        {
+          "name": "create_cv_pdf_from_html",
+          "parameters": [
+            "html: str"
+          ],
+          "return_type": "bytes",
+          "description": "Compila un documento HTML a bytes de PDF utilizando la biblioteca xhtml2pdf."
+        },
+        {
+          "name": "create_cv_docx_from_html",
+          "parameters": [
+            "html: str"
+          ],
+          "return_type": "bytes",
+          "description": "Convierte un documento HTML a un archivo Word DOCX editable usando htmldocx y python-docx."
+        },
+        {
+          "name": "extract_gemini_text",
+          "parameters": [
+            "response_data: dict"
+          ],
+          "return_type": "str",
+          "description": "Extrae el texto de la respuesta de la API compatible con DeepSeek/Gemini."
+        },
+        {
+          "name": "extract_gemini_error_detail",
+          "parameters": [
+            "response: requests.Response"
+          ],
+          "return_type": "str",
+          "description": "Extrae detalles amigables de error desde el cuerpo de una respuesta HTTP fallida del proveedor de IA."
+        },
+        {
+          "name": "deepseek_url",
+          "parameters": [],
+          "return_type": "str",
+          "description": "Construye la URL base para el endpoint de Chat Completions de DeepSeek."
+        },
+        {
+          "name": "deepseek_headers",
+          "parameters": [],
+          "return_type": "dict",
+          "description": "Genera los encabezados HTTP con Bearer token de autenticación para la API de DeepSeek."
+        },
+        {
+          "name": "to_deepseek_messages",
+          "parameters": [
+            "history: list"
+          ],
+          "return_type": "list",
+          "description": "Transforma el historial de chat de la app al formato de roles 'user'/'assistant'/'system' esperado por DeepSeek."
+        },
+        {
+          "name": "is_supabase_missing_table_error",
+          "parameters": [
+            "ex: Exception",
+            "table_name: str"
+          ],
+          "return_type": "bool",
+          "description": "Detecta si un error lanzado por Supabase se debe a la ausencia de una tabla en la base de datos."
+        },
+        {
+          "name": "generate_cv_structure_with_gemini",
+          "parameters": [
+            "profile_data: dict",
+            "full_name: str",
+            "email: str"
+          ],
+          "return_type": "tuple[dict, str]",
+          "description": "Invoca a la IA para redactar la estructura y contenido completo del CV en formato JSON."
+        },
+        {
+          "name": "generate_cv_structure",
+          "parameters": [
+            "profile_data: dict",
+            "full_name: str",
+            "email: str"
+          ],
+          "return_type": "tuple[dict, str]",
+          "description": "Orquesta la generación de la estructura del CV intentando IA y cayendo a plantilla local si es necesario."
+        },
+        {
+          "name": "create_cv_docx_bytes",
+          "parameters": [
+            "full_name: str",
+            "email: str",
+            "profile_data: dict",
+            "cv_structure: dict"
+          ],
+          "return_type": "bytes",
+          "description": "Crea directamente un archivo DOCX estilizado a partir de la estructura del CV mediante python-docx."
+        },
+        {
+          "name": "split_text_for_pdf",
+          "parameters": [
+            "text: str",
+            "max_width: float",
+            "font_name: str",
+            "font_size: float"
+          ],
+          "return_type": "list[str]",
+          "description": "Divide texto largo en líneas ajustadas al ancho disponible en páginas PDF generadas con ReportLab."
+        },
+        {
+          "name": "create_cv_pdf_bytes",
+          "parameters": [
+            "full_name: str",
+            "email: str",
+            "profile_data: dict",
+            "cv_structure: dict"
+          ],
+          "return_type": "bytes",
+          "description": "Genera un archivo PDF profesional directamente con ReportLab usando la estructura de datos del CV."
+        },
+        {
+          "name": "get_supabase_public_url",
+          "parameters": [
+            "storage_path: str"
+          ],
+          "return_type": "str",
+          "description": "Obtiene la URL pública de descarga de un archivo subido al bucket 'applicant-cvs' de Supabase Storage."
+        },
+        {
+          "name": "save_cv_metadata",
+          "parameters": [
+            "email: str",
+            "file_name: str",
+            "storage_path: str",
+            "public_url: str",
+            "source: str",
+            "target_roles: str",
+            "profile_data: dict"
+          ],
+          "return_type": "dict",
+          "description": "Almacena los metadatos del CV generado (ruta de archivo, URL, fuente, roles) en la tabla 'ApplicantCVs'."
+        },
+        {
+          "name": "normalize_profile_data",
+          "parameters": [
+            "profile_data: dict"
+          ],
+          "return_type": "dict",
+          "description": "Normaliza y limpia las claves y valores del perfil del candidato antes de procesarlo."
+        },
+        {
+          "name": "upload_cv_bytes",
+          "parameters": [
+            "email: str",
+            "file_name: str",
+            "content: bytes",
+            "source: str",
+            "target_roles: str",
+            "profile_data: dict"
+          ],
+          "return_type": "tuple[str, str]",
+          "description": "Sube el archivo compilado en bytes al almacenamiento de Supabase y guarda sus metadatos."
+        },
+        {
+          "name": "upload_cv_file",
+          "parameters": [
+            "email: str",
+            "file_path: str",
+            "file_name: str"
+          ],
+          "return_type": "tuple[str, str]",
+          "description": "Lee un archivo local seleccionado por el usuario y lo sube al bucket de CVs en Supabase."
+        },
+        {
+          "name": "create_ai_cv_for_user",
+          "parameters": [
+            "email: str",
+            "full_name: str",
+            "profile_data: dict",
+            "output_format: str"
+          ],
+          "return_type": "dict",
+          "description": "Flujo completo de generación de CV con IA: redacta contenido, compila a PDF/DOCX y almacena en Supabase."
+        },
+        {
+          "name": "get_applicant_cv",
+          "parameters": [
+            "email: str"
+          ],
+          "return_type": "dict | None",
+          "description": "Recupera de la base de datos el registro del último CV generado o subido por el candidato."
+        },
+        {
+          "name": "mk_button",
+          "parameters": [
+            "label: str",
+            "on_click",
+            "style",
+            "variant: str",
+            "palette: dict"
+          ],
+          "return_type": "ft.ElevatedButton | ft.OutlinedButton",
+          "description": "Fábrica de botones con estilos consistentes según el sistema de diseño de la app Flet."
+        },
+        {
+          "name": "mk_textfield",
+          "parameters": [
+            "label: str",
+            "palette: dict"
+          ],
+          "return_type": "ft.TextField",
+          "description": "Fábrica de campos de entrada de texto estandarizados con paleta de colores activa."
+        },
+        {
+          "name": "is_dark_mode",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "bool",
+          "description": "Determina si la página se encuentra en modo oscuro o claro."
+        },
+        {
+          "name": "get_palette",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "dict",
+          "description": "Obtiene los colores del tema visual actual (fondos, primario, superficies, bordes, textos)."
+        },
+        {
+          "name": "get_button_style",
+          "parameters": [
+            "variant: str",
+            "palette: dict"
+          ],
+          "return_type": "ft.ButtonStyle",
+          "description": "Genera el estilo visual para botones según la variante (primary, secondary, danger, etc.)."
+        },
+        {
+          "name": "ui_font_size",
+          "parameters": [
+            "page: ft.Page",
+            "token: str"
+          ],
+          "return_type": "float",
+          "description": "Calcula el tamaño tipográfico responsivo de acuerdo al tamaño del viewport."
+        },
+        {
+          "name": "get_page_padding",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "ft.Padding",
+          "description": "Calcula los márgenes interiores responsivos de la página según el dispositivo."
+        },
+        {
+          "name": "show_feedback",
+          "parameters": [
+            "page: ft.Page",
+            "message: str",
+            "tone: str",
+            "action_label: str",
+            "on_action"
+          ],
+          "return_type": "None",
+          "description": "Muestra un SnackBar o banner de notificación con estilo según el tono (success, warning, error, info)."
+        },
+        {
+          "name": "mk_surface_card",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "content: ft.Control"
+          ],
+          "return_type": "ft.Container",
+          "description": "Contenedor tipo tarjeta con elevación, bordes redondeados y fondo de superficie del tema."
+        },
+        {
+          "name": "get_choice_button_style",
+          "parameters": [
+            "selected: bool",
+            "palette: dict"
+          ],
+          "return_type": "ft.ButtonStyle",
+          "description": "Estilo para botones de opción tipo chip o selector."
+        },
+        {
+          "name": "mk_section_header",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "title: str",
+            "subtitle: str"
+          ],
+          "return_type": "ft.Container",
+          "description": "Componente reutilizable de encabezado de sección con título y subtítulo explicativo."
+        },
+        {
+          "name": "mk_status_chip",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "label: str",
+            "count: int",
+            "color: str"
+          ],
+          "return_type": "ft.Container",
+          "description": "Chip visual para mostrar el estado de una postulación o métrica con contador asociado."
+        },
+        {
+          "name": "mk_chat_bubble",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "content: ft.Control"
+          ],
+          "return_type": "ft.Container",
+          "description": "Burbuja de mensaje para el chat de simulación de entrevista (usuario vs reclutador IA)."
+        },
+        {
+          "name": "mk_centered_shell",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "content: ft.Control"
+          ],
+          "return_type": "ft.Container",
+          "description": "Envoltorio centrado responsivo para vistas de login, registro o formularios."
+        },
+        {
+          "name": "mk_loading_overlay",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "title: str",
+            "subtitle: str"
+          ],
+          "return_type": "ft.Container",
+          "description": "Capa superpuesta de carga con indicador animado y mensaje de progreso."
+        },
+        {
+          "name": "mk_empty_state",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "title: str",
+            "subtitle: str"
+          ],
+          "return_type": "ft.Container",
+          "description": "Vista de estado vacío con ilustración/icono y textos motivadores cuando no hay datos."
+        },
+        {
+          "name": "mk_status_text",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "text: str",
+            "tone: str"
+          ],
+          "return_type": "ft.Text",
+          "description": "Genera texto de estado con el color adecuado según el resultado de la operación."
+        },
+        {
+          "name": "get_nav_icon_button_style",
+          "parameters": [
+            "is_active: bool",
+            "palette: dict"
+          ],
+          "return_type": "ft.ButtonStyle",
+          "description": "Estilo para botones de la barra de navegación inferior/superior según estado activo."
+        },
+        {
+          "name": "get_icon_button_surface_style",
+          "parameters": [
+            "palette: dict",
+            "active: bool"
+          ],
+          "return_type": "ft.ButtonStyle",
+          "description": "Estilo de superficie con borde para botones de icono secundarios."
+        },
+        {
+          "name": "make_theme_toggle",
+          "parameters": [
+            "page: ft.Page",
+            "on_click"
+          ],
+          "return_type": "ft.IconButton",
+          "description": "Crea el botón de alternancia entre tema claro y tema oscuro."
+        },
+        {
+          "name": "get_viewport_width",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "float",
+          "description": "Obtiene el ancho actual disponible de la ventana o pantalla."
+        },
+        {
+          "name": "is_mobile",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "bool",
+          "description": "Determina si el dispositivo actual corresponde a formato móvil (< 600px)."
+        },
+        {
+          "name": "is_tablet",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "bool",
+          "description": "Determina si el dispositivo se clasifica como tableta (600px - 1024px)."
+        },
+        {
+          "name": "get_device_bucket",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "str",
+          "description": "Retorna el breakpoint responsivo actual ('mobile', 'tablet', 'desktop')."
+        },
+        {
+          "name": "make_responsive_resize_handler",
+          "parameters": [
+            "page: ft.Page",
+            "rebuild_view"
+          ],
+          "return_type": "Callable",
+          "description": "Crea un callback optimizado para redibujar la vista reactivamente ante cambios de tamaño de ventana."
+        },
+        {
+          "name": "normalize_text",
+          "parameters": [
+            "text: str"
+          ],
+          "return_type": "str",
+          "description": "Limpia y colapsa espacios en blanco repetidos en cadenas de texto."
+        },
+        {
+          "name": "trim_text",
+          "parameters": [
+            "text: str",
+            "max_len: int"
+          ],
+          "return_type": "str",
+          "description": "Trunca un texto a una longitud máxima agregando puntos suspensivos si es necesario."
+        },
+        {
+          "name": "get_application_title",
+          "parameters": [
+            "job: dict"
+          ],
+          "return_type": "str",
+          "description": "Extrae el título formateado de una vacante a partir del registro de empleo."
+        },
+        {
+          "name": "get_application_description",
+          "parameters": [
+            "job: dict"
+          ],
+          "return_type": "str",
+          "description": "Extrae o resume la descripción textual del empleo."
+        },
+        {
+          "name": "build_application_description_payload",
+          "parameters": [
+            "job_data: dict",
+            "enriched_description: str"
+          ],
+          "return_type": "str",
+          "description": "Construye el contenido JSON/texto final que combina la descripción del empleo y los datos extraídos de la web."
+        },
+        {
+          "name": "build_interview_system_prompt",
+          "parameters": [
+            "application_row: dict"
+          ],
+          "return_type": "str",
+          "description": "Genera el prompt de sistema para que la IA asuma el rol de entrevistador técnico experto en la vacante seleccionada."
+        },
+        {
+          "name": "generate_interview_reply_with_gemini",
+          "parameters": [
+            "application_row: dict",
+            "history: list",
+            "user_message: str"
+          ],
+          "return_type": "str",
+          "description": "Envía la respuesta del candidato al modelo de IA y genera la réplica, evaluación y siguiente pregunta."
+        },
+        {
+          "name": "collect_highlight_items",
+          "parameters": [
+            "job: dict"
+          ],
+          "return_type": "list[str]",
+          "description": "Extrae los puntos clave, requisitos y beneficios destacados del empleo desde los resultados de SerpAPI."
+        },
+        {
+          "name": "fetch_page_description",
+          "parameters": [
+            "url: str",
+            "timeout: int"
+          ],
+          "return_type": "str",
+          "description": "Hace scraping de una URL externa de postulación para extraer metadatos de título y descripción con BeautifulSoup."
+        },
+        {
+          "name": "build_enriched_description",
+          "parameters": [
+            "job: dict",
+            "apply_link: str"
+          ],
+          "return_type": "str",
+          "description": "Combina la información disponible de la vacante con los metadatos obtenidos de la página de postulación."
+        },
+        {
+          "name": "show_add_manual_job_dialog",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Muestra un diálogo modal para registrar manualmente una vacante pegando su enlace web con enriquecimiento automático."
+        },
+        {
+          "name": "open_ai_cv_builder_dialog",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "initial_values: dict",
+            "on_complete",
+            "generate_and_store"
+          ],
+          "return_type": "None",
+          "description": "Abre el diálogo modal de configuración guiada del CV (roles objetivo, experiencia, educación, colores, formato)."
+        },
+        {
+          "name": "open_gemini_chat_cv_dialog",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "on_complete",
+            "generate_and_store"
+          ],
+          "return_type": "None",
+          "description": "Diálogo de chat interactivo asistido por IA para construir el CV conversacionalmente paso a paso."
+        },
+        {
+          "name": "set_authenticated_bottom_appbar",
+          "parameters": [
+            "page: ft.Page",
+            "palette: dict",
+            "active_section: str"
+          ],
+          "return_type": "None",
+          "description": "Configura la barra de navegación inferior de la aplicación con accesos a Empleos, Postulaciones, CV y Entrevistas."
+        },
+        {
+          "name": "show_cv_prep_ui",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Construye y renderiza la pantalla de preparación de CV con vista previa, opciones de descarga y edición."
+        },
+        {
+          "name": "show_interview_prep_ui",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Construye y renderiza la vista de simulación de entrevistas de trabajo con chat en tiempo real."
+        },
+        {
+          "name": "show_main_ui",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Renderiza la pantalla principal con la lista de empleos encontrados, filtros de búsqueda y tarjetas interactivas."
+        },
+        {
+          "name": "show_menu_ui",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Muestra el menú de usuario con detalles de perfil, opciones de soporte y accesos del sistema."
+        },
+        {
+          "name": "show_login_ui",
+          "parameters": [
+            "page: ft.Page",
+            "email_prefill: str",
+            "pwd_prefill: str",
+            "auto_submit: bool"
+          ],
+          "return_type": "None",
+          "description": "Construye y despliega la interfaz de inicio de sesión con soporte de auto-login y recuperación de contraseña."
+        },
+        {
+          "name": "show_register_ui",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Construye y despliega el formulario de registro de nuevos candidatos con validaciones de email y contraseña."
+        },
+        {
+          "name": "main",
+          "parameters": [
+            "page: ft.Page"
+          ],
+          "return_type": "None",
+          "description": "Punto de entrada de la aplicación Flet. Configura títulos, temas, escuchas de cambio de tamaño y navega a la pantalla inicial."
+        }
+      ]
+    },
+    {
+      "module_name": "Mobile API Gateway",
+      "file_path": "mobile_api.py",
+      "technology": "Python / FastAPI",
+      "description": "Servidor backend REST que atiende a la aplicación móvil Flutter. Proporciona endpoints para búsqueda de empleos, enriquecimiento por web scraping, proxy hacia DeepSeek y Supabase Edge Functions, subida de CVs y métricas de rendimiento.",
+      "endpoints": [
+        {
+          "name": "health",
+          "method": "GET",
+          "route": "/health",
+          "description": "Comprueba el estado de operatividad de la API móvil y retorna confirmación del servicio."
+        },
+        {
+          "name": "readiness",
+          "method": "GET",
+          "route": "/readiness",
+          "description": "Verifica que las credenciales críticas (Supabase, DeepSeek, SerpAPI) se encuentren configuradas."
+        },
+        {
+          "name": "metrics",
+          "method": "GET",
+          "route": "/metrics",
+          "description": "Expone las métricas operativas en memoria (conteo de peticiones, éxitos y fallos por servicio)."
+        },
+        {
+          "name": "metrics_dashboard",
+          "method": "GET",
+          "route": "/metrics/dashboard",
+          "description": "Renderiza un panel visual HTML con gráficos y estadísticas en tiempo real del uso de la API."
+        },
+        {
+          "name": "jobs_search",
+          "method": "POST",
+          "route": "/jobs/search",
+          "description": "Ejecuta búsquedas de vacantes en Google Jobs vía SerpAPI según palabras clave, ciudad, país e idioma."
+        },
+        {
+          "name": "cv_assist",
+          "method": "POST",
+          "route": "/cv/assist",
+          "description": "Genera recomendaciones profesionales de redacción de CV (resumen ejecutivo, logros ATS, habilidades) usando DeepSeek."
+        },
+        {
+          "name": "cv_generate_store",
+          "method": "POST",
+          "route": "/cv/generate-store",
+          "description": "Redacta el CV en LaTeX con IA y lo compila a PDF/DOCX, guardándolo en Supabase Storage o devolviendo un borrador preliminar."
+        },
+        {
+          "name": "cv_upload",
+          "method": "POST",
+          "route": "/cv/upload",
+          "description": "Recibe un archivo de CV (PDF/DOCX) subido directamente desde el dispositivo móvil y lo almacena en el bucket 'applicant-cvs'."
+        },
+        {
+          "name": "interview_reply",
+          "method": "POST",
+          "route": "/interview/reply",
+          "description": "Procesa la réplica del candidato en una simulación de entrevista y devuelve evaluación, sugerencias y siguiente pregunta."
+        },
+        {
+          "name": "add_manual_application",
+          "method": "POST",
+          "route": "/applications/add-manual",
+          "description": "Realiza scraping a una URL de vacante externa para extraer título, empresa y descripción enriquecida."
+        },
+        {
+          "name": "monetization_event",
+          "method": "POST",
+          "route": "/monetization/event",
+          "description": "Registra analíticas de visualización e interacción con anuncios de AdMob en Supabase o en un archivo JSONL de respaldo."
+        }
+      ],
+      "internal_functions": [
+        {
+          "name": "_inc",
+          "parameters": [
+            "key: str",
+            "amount: int = 1"
+          ],
+          "description": "Incrementa de forma concurrente y segura los contadores de métricas en memoria."
+        },
+        {
+          "name": "_count_requests",
+          "parameters": [
+            "request: Request",
+            "call_next"
+          ],
+          "description": "Middleware HTTP que audita cada petición entrante y registra tiempos y errores."
+        },
+        {
+          "name": "_invoke_supabase_edge_function",
+          "parameters": [
+            "function_name: str",
+            "payload: dict"
+          ],
+          "description": "Llama de manera segura a una función serverless alojada en Supabase Edge Functions con autenticación."
+        },
+        {
+          "name": "_extract_deepseek_text",
+          "parameters": [
+            "response_data: dict"
+          ],
+          "description": "Extrae el texto de la respuesta retornada por el modelo de Chat Completion de DeepSeek."
+        },
+        {
+          "name": "_call_deepseek",
+          "parameters": [
+            "prompt: str",
+            "temperature: float",
+            "max_output_tokens: int"
+          ],
+          "description": "Ejecuta una petición directa a la API de DeepSeek manejando modelos primarios y modelos de respaldo."
+        },
+        {
+          "name": "_save_monetization_event",
+          "parameters": [
+            "payload: MonetizationEventRequest"
+          ],
+          "description": "Inserta el evento publicitario en la tabla de Supabase o lo almacena localmente si falla la conexión."
+        },
+        {
+          "name": "_extract_manual_application_fields",
+          "parameters": [
+            "url: str"
+          ],
+          "description": "Descarga y analiza el código HTML de una página de vacante para recuperar metadatos OpenGraph y etiquetas principales."
+        }
+      ]
+    },
+    {
+      "module_name": "Job Search Service",
+      "file_path": "services/job_search_service.py",
+      "technology": "Python",
+      "description": "Servicio especializado que encapsula la integración con la API de Google Jobs provista por SerpAPI.",
+      "functions": [
+        {
+          "name": "search_google_jobs",
+          "parameters": [
+            "keywords: str",
+            "city: str = ''",
+            "region: str = ''",
+            "country_name: str = ''",
+            "location: str = ''",
+            "hl: str = ''",
+            "gl: str = ''",
+            "google_domain: str = ''"
+          ],
+          "return_type": "list[dict[str, Any]]",
+          "description": "Consulta el motor Google Jobs de SerpAPI, deduplica partes de la ubicación geográfica y aplica filtros de idioma y país."
+        }
+      ]
+    },
+    {
+      "module_name": "Backend Configuration",
+      "file_path": "backend_config.py",
+      "technology": "Python",
+      "description": "Carga de variables de entorno y definición inmutable de configuraciones críticas para servicios externos.",
+      "functions": [
+        {
+          "name": "_split_csv",
+          "parameters": [
+            "raw_value: str | None",
+            "default: str = ''"
+          ],
+          "return_type": "list[str]",
+          "description": "Convierte variables de entorno delimitadas por coma en listas de cadenas limpias."
+        }
+      ],
+      "classes": [
+        {
+          "name": "Settings",
+          "type": "dataclass(frozen=True)",
+          "description": "Estructura inmutable que contiene llaves de API, URLs de Supabase, credenciales de DeepSeek, SerpAPI, AdMob y parámetros del servidor."
+        }
+      ]
+    },
+    {
+      "module_name": "Supabase Serverless Edge Functions",
+      "file_path": "supabase/functions/",
+      "technology": "TypeScript / Deno",
+      "description": "Conjunto de funciones serverless ejecutadas en el borde de Supabase. Gestionan la inteligencia artificial, compilación de LaTeX a PDF/DOCX, normalización de búsquedas, sistema de referidos y borrado seguro de cuentas.",
+      "shared_modules": [
+        {
+          "file": "_shared/cors.ts",
+          "description": "Define encabezados CORS estándar para permitir peticiones seguras desde aplicaciones web y móviles."
+        },
+        {
+          "file": "_shared/gemini.ts",
+          "description": "Cliente unificado para DeepSeek (con alias legacy de Gemini) que gestiona llamadas al modelo, reintentos de completado ante respuestas de LaTeX truncadas y conmutación por error entre modelos de respaldo."
+        },
+        {
+          "file": "_shared/query_normalizer.ts",
+          "description": "Normalizador determinista de búsquedas que remueve diacríticos, traduce términos de empleo (remoto, jornada, seniority) y genera claves SHA-256 para el caché."
+        },
+        {
+          "file": "_shared/job_normalizer.ts",
+          "description": "Transforma los resultados crudos de SerpAPI al esquema unificado 'NormalizedJob' con generación de huella digital única (fingerprint)."
+        }
+      ],
+      "functions": [
+        {
+          "name": "search-jobs",
+          "method": "POST",
+          "route": "supabase/functions/search-jobs",
+          "description": "Búsqueda inteligente de empleo: normaliza la consulta, consulta caché PostgreSQL ('job_search_cache'), descarta vacantes ya vistas por el usuario ('user_seen_jobs'), llama a SerpAPI y premia al usuario por su primera búsqueda en el programa de referidos."
+        },
+        {
+          "name": "cv-generate-store",
+          "method": "POST",
+          "route": "supabase/functions/cv-generate-store",
+          "description": "Generación y almacenamiento de CV: crea código LaTeX moderncv verificado con DeepSeek, compila a PDF vía latexonline.cc o a DOCX con biblioteca nativa, lo sube al bucket 'applicant-cvs' y registra los metadatos en 'ApplicantCVs'."
+        },
+        {
+          "name": "cv-assist",
+          "method": "POST",
+          "route": "supabase/functions/cv-assist",
+          "description": "Asesor de currículums: recibe el historial profesional del usuario y retorna un resumen persuasivo, viñetas de experiencia optimizadas para ATS y habilidades recomendadas en cualquiera de los 6 idiomas soportados."
+        },
+        {
+          "name": "interview-reply",
+          "method": "POST",
+          "route": "supabase/functions/interview-reply",
+          "description": "Coach interactivo de entrevistas: analiza el mensaje del usuario frente al puesto laboral, evalúa la respuesta, asigna puntaje (0-10), sugiere una versión mejorada y formula la siguiente pregunta según el modo seleccionado (simulación, STAR, técnico, salario, preguntas difíciles)."
+        },
+        {
+          "name": "referrals",
+          "method": "POST",
+          "route": "supabase/functions/referrals",
+          "description": "Motor del sistema de referidos con 3 acciones: 'get_code' (genera/obtiene código alfanumérico único), 'apply_code' (vincula nuevo usuario con verificaciones antifraude y asigna 7 días sin publicidad a ambas partes) y 'status' (reporta estado de bonificaciones)."
+        },
+        {
+          "name": "account-delete",
+          "method": "POST",
+          "route": "supabase/functions/account-delete",
+          "description": "Eliminación completa de cuenta conforme a normativas de privacidad: ejecuta la función RPC 'soft_delete_account_for_user' para anonimizar PII, vacía archivos en storage y borra el usuario en Supabase Auth Admin."
+        },
+        {
+          "name": "password-recovery-verify",
+          "method": "POST",
+          "route": "supabase/functions/password-recovery-verify",
+          "description": "Verificación segura de identidad para restablecer contraseña mediante validación cruzada de email, teléfono y nombre completo, con limitador de 5 intentos por ventana de 15 minutos."
+        },
+        {
+          "name": "update-applicant-contact",
+          "method": "POST",
+          "route": "supabase/functions/update-applicant-contact",
+          "description": "Actualiza la información de contacto (email y teléfono) del candidato autenticado invocando la función RPC de base de datos."
+        }
+      ]
+    },
+    {
+      "module_name": "Flutter Mobile Application",
+      "file_path": "mobile_app/lib/",
+      "technology": "Flutter / Dart",
+      "description": "Aplicación móvil completa para iOS y Android estructurada en arquitectura por capas (config, data, features, models, services, theme, l10n).",
+      "submodules": [
+        {
+          "layer": "Data & Repository",
+          "files": [
+            "lib/data/jobfriends_repository.dart",
+            "lib/data/saved_credentials_store.dart"
+          ],
+          "classes_and_methods": [
+            {
+              "class": "JobFriendsRepository",
+              "description": "Capa de repositorio central de la app que orquesta Supabase Auth, PostgreSQL, Storage, Edge Functions y la API local.",
+              "methods": [
+                {
+                  "name": "login",
+                  "parameters": [
+                    "email: str",
+                    "password: str"
+                  ],
+                  "return_type": "Future<UserProfile>",
+                  "description": "Inicia sesión con Supabase Auth y carga el perfil del candidato."
+                },
+                {
+                  "name": "register",
+                  "parameters": [
+                    "email: str",
+                    "password: str",
+                    "firstName: str",
+                    "lastName: str",
+                    "phone: str"
+                  ],
+                  "return_type": "Future<UserProfile>",
+                  "description": "Registra un nuevo usuario en Supabase Auth y crea su ficha en 'Aplicants'."
+                },
+                {
+                  "name": "logout",
+                  "parameters": [],
+                  "return_type": "Future<void>",
+                  "description": "Cierra la sesión activa en el cliente de Supabase."
+                },
+                {
+                  "name": "updateContactInfo",
+                  "parameters": [
+                    "currentProfile: UserProfile",
+                    "email: str",
+                    "phone: str"
+                  ],
+                  "return_type": "Future<UserProfile>",
+                  "description": "Actualiza el teléfono y correo mediante Edge Function o RPC."
+                },
+                {
+                  "name": "verifyPasswordRecoveryIdentity",
+                  "parameters": [
+                    "email: str",
+                    "fullName: str",
+                    "phone: str"
+                  ],
+                  "return_type": "Future<bool>",
+                  "description": "Verifica los datos personales del usuario antes de autorizar el cambio de contraseña."
+                },
+                {
+                  "name": "requestPasswordRecovery",
+                  "parameters": [
+                    "email: str",
+                    "redirectTo: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Solicita el enlace de recuperación de contraseña vía Supabase Auth."
+                },
+                {
+                  "name": "changePassword",
+                  "parameters": [
+                    "newPassword: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Actualiza la contraseña del usuario autenticado."
+                },
+                {
+                  "name": "deleteAccount",
+                  "parameters": [
+                    "reason: str = ''"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Invoca la función de eliminación y anonimización de cuenta."
+                },
+                {
+                  "name": "registerLegalAcceptance",
+                  "parameters": [
+                    "documentKey: str",
+                    "documentVersion: str",
+                    "acceptedAtUtc: DateTime",
+                    "localeCode: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Registra en la base de datos la aceptación obligatoria de términos y condiciones."
+                },
+                {
+                  "name": "fetchApplications",
+                  "parameters": [
+                    "email: str"
+                  ],
+                  "return_type": "Future<List<ApplicationRecord>>",
+                  "description": "Obtiene la lista de todas las postulaciones registradas por el usuario."
+                },
+                {
+                  "name": "saveApplication",
+                  "parameters": [
+                    "applicantEmail: str",
+                    "title: str",
+                    "website: str",
+                    "applyLink: str",
+                    "description: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Crea una nueva postulación en la base de datos."
+                },
+                {
+                  "name": "updateApplicationStatus",
+                  "parameters": [
+                    "applicationId: str",
+                    "status: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Modifica el estado de una postulación (Aplicado, En proceso, Entrevista, Oferta, Rechazado)."
+                },
+                {
+                  "name": "deleteApplication",
+                  "parameters": [
+                    "applicationId: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Elimina una postulación y limpia las sesiones de entrevista asociadas."
+                },
+                {
+                  "name": "fetchApplicantCvRecord",
+                  "parameters": [
+                    "applicantEmail: str"
+                  ],
+                  "return_type": "Future<CvGeneratedResult?>",
+                  "description": "Recupera los datos del CV más reciente generado o subido por el candidato."
+                },
+                {
+                  "name": "searchJobs",
+                  "parameters": [
+                    "keywords: str",
+                    "city",
+                    "region",
+                    "countryName",
+                    "location",
+                    "hl",
+                    "gl",
+                    "nextPageToken",
+                    "userEmail"
+                  ],
+                  "return_type": "Future<JobSearchPage>",
+                  "description": "Busca ofertas de empleo consumiendo la Edge Function o el Gateway móvil."
+                },
+                {
+                  "name": "requestCvAssist",
+                  "parameters": [
+                    "fullName",
+                    "email",
+                    "targetRoles",
+                    "experience",
+                    "education",
+                    "skills",
+                    "summary"
+                  ],
+                  "return_type": "Future<String>",
+                  "description": "Solicita sugerencias de redacción para el currículum con IA."
+                },
+                {
+                  "name": "generateCvDraft",
+                  "parameters": [
+                    "fullName",
+                    "email",
+                    "outputFormat",
+                    "profileData",
+                    "traceId"
+                  ],
+                  "return_type": "Future<CvDraftResult>",
+                  "description": "Genera el código LaTeX preliminar del CV para previsualización inmediata."
+                },
+                {
+                  "name": "generateAndStoreCv",
+                  "parameters": [
+                    "fullName",
+                    "email",
+                    "outputFormat",
+                    "profileData",
+                    "draftId",
+                    "onProgress"
+                  ],
+                  "return_type": "Future<CvGeneratedResult>",
+                  "description": "Genera, compila y almacena el CV final en PDF o DOCX con notificación de progreso por etapas."
+                },
+                {
+                  "name": "uploadCvFile",
+                  "parameters": [
+                    "email: str",
+                    "fileName: str",
+                    "fileBytes: List<int>"
+                  ],
+                  "return_type": "Future<CvGeneratedResult>",
+                  "description": "Carga un archivo existente de CV al storage de Supabase."
+                },
+                {
+                  "name": "requestInterviewReply",
+                  "parameters": [
+                    "jobTitle",
+                    "jobDescription",
+                    "applicationLink",
+                    "history",
+                    "userMessage",
+                    "mode",
+                    "sessionSummary"
+                  ],
+                  "return_type": "Future<InterviewCoachReply>",
+                  "description": "Envía una respuesta del usuario al entrevistador IA y obtiene feedback estructurado."
+                },
+                {
+                  "name": "fetchInterviewSessions",
+                  "parameters": [
+                    "applicantEmail: str",
+                    "limit: int = 50"
+                  ],
+                  "return_type": "Future<List<InterviewSession>>",
+                  "description": "Recupera el historial de sesiones de práctica de entrevistas."
+                },
+                {
+                  "name": "createInterviewSession",
+                  "parameters": [
+                    "applicantEmail: str",
+                    "applicationId: str",
+                    "mode: InterviewPracticeMode"
+                  ],
+                  "return_type": "Future<InterviewSession?>",
+                  "description": "Inicia una nueva sesión de práctica vinculada a una vacante específica."
+                },
+                {
+                  "name": "fetchInterviewMessages",
+                  "parameters": [
+                    "sessionId: str",
+                    "limit: int = 60"
+                  ],
+                  "return_type": "Future<List<InterviewMessage>>",
+                  "description": "Obtiene los mensajes intercambiados durante una sesión de entrevista."
+                },
+                {
+                  "name": "saveInterviewMessage",
+                  "parameters": [
+                    "message: InterviewMessage",
+                    "sessionId",
+                    "applicantEmail",
+                    "applicationId",
+                    "mode"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Almacena un mensaje (del usuario o del entrevistador IA) en la base de datos."
+                },
+                {
+                  "name": "registerMonetizationEvent",
+                  "parameters": [
+                    "eventName: str",
+                    "userEmail: str",
+                    "valueUsd: double",
+                    "metadata: Map"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Registra analíticas de publicidad en la tabla 'MonetizationEvents'."
+                },
+                {
+                  "name": "fetchReferralStatus",
+                  "parameters": [],
+                  "return_type": "Future<ReferralStatus>",
+                  "description": "Consulta el código de referido del usuario y sus días restantes sin publicidad."
+                },
+                {
+                  "name": "getOrCreateReferralCode",
+                  "parameters": [],
+                  "return_type": "Future<String>",
+                  "description": "Solicita la generación o lectura del código único de referido."
+                },
+                {
+                  "name": "applyReferralCode",
+                  "parameters": [
+                    "code: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Aplica el código de un amigo para ganar 7 días de acceso premium sin anuncios."
+                },
+                {
+                  "name": "isCurrentUserAdFree",
+                  "parameters": [],
+                  "return_type": "Future<bool>",
+                  "description": "Comprueba si el usuario tiene una membresía activa sin anuncios ganada por referidos."
+                },
+                {
+                  "name": "registerCompanyInterest",
+                  "parameters": [
+                    "companyName: str",
+                    "email: str",
+                    "phone: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Registra un lead de empresa interesada en publicar vacantes o contratar."
+                },
+                {
+                  "name": "addManualApplication",
+                  "parameters": [
+                    "applicantEmail: str",
+                    "applicationUrl: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Agrega una postulación ingresada por URL con web scraping automático y fallback local."
+                }
+              ]
+            },
+            {
+              "class": "SavedCredentialsStore",
+              "description": "Gestiona el guardado seguro del usuario y contraseña en SharedPreferences para mantener la sesión.",
+              "methods": [
+                {
+                  "name": "read",
+                  "parameters": [],
+                  "return_type": "Future<SavedCredentials?>",
+                  "description": "Lee las credenciales guardadas si existen."
+                },
+                {
+                  "name": "save",
+                  "parameters": [
+                    "email: str",
+                    "password: str"
+                  ],
+                  "return_type": "Future<void>",
+                  "description": "Guarda las credenciales de inicio de sesión."
+                },
+                {
+                  "name": "clear",
+                  "parameters": [],
+                  "return_type": "Future<void>",
+                  "description": "Elimina las credenciales guardadas."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "layer": "Services & Utilities",
+          "files": [
+            "lib/services/job_search_reminder_service.dart",
+            "lib/services/referral_deep_link_service.dart",
+            "lib/services/cv_revision_request_tracker.dart",
+            "lib/features/ads/rewarded_interstitial_ads_service.dart"
+          ],
+          "classes_and_methods": [
+            {
+              "class": "JobSearchReminderService",
+              "description": "Servicio de notificaciones locales para recordar al candidato revisar nuevas vacantes diariamente.",
+              "methods": [
+                {
+                  "name": "initialize",
+                  "parameters": [],
+                  "description": "Inicializa los canales de notificación en iOS y Android."
+                },
+                {
+                  "name": "scheduleReminder",
+                  "parameters": [
+                    "title: str",
+                    "body: str",
+                    "hour: int",
+                    "minute: int"
+                  ],
+                  "description": "Programa un recordatorio local a la hora configurada por el usuario."
+                },
+                {
+                  "name": "cancelReminder",
+                  "parameters": [],
+                  "description": "Cancela las notificaciones programadas."
+                }
+              ]
+            },
+            {
+              "class": "ReferralDeepLinkService",
+              "description": "Manejo de deep links (jobfriends://invite y https://jobfriends.app/invite) para capturar códigos de referidos.",
+              "methods": [
+                {
+                  "name": "extractReferralCode",
+                  "parameters": [
+                    "uri: Uri?"
+                  ],
+                  "return_type": "String?",
+                  "description": "Extrae y valida el formato del código de referido desde una URL."
+                },
+                {
+                  "name": "buildInviteDeepLink",
+                  "parameters": [
+                    "referralCode: str"
+                  ],
+                  "return_type": "String",
+                  "description": "Genera el enlace compartible de invitación con el código del usuario."
+                }
+              ]
+            },
+            {
+              "class": "CvRevisionRequestTracker",
+              "description": "Controla el número de solicitudes de revisión de CV para mostrar un anuncio recompensado cada 3 revisiones.",
+              "methods": [
+                {
+                  "name": "registerRequest",
+                  "parameters": [
+                    "userEmail: str"
+                  ],
+                  "return_type": "Future<int>",
+                  "description": "Incrementa y guarda el contador de revisiones del candidato."
+                },
+                {
+                  "name": "shouldShowAdForCount",
+                  "parameters": [
+                    "count: int"
+                  ],
+                  "return_type": "bool",
+                  "description": "Comprueba si el contador actual corresponde a un múltiplo de 3 para disparar un anuncio."
+                }
+              ]
+            },
+            {
+              "class": "RewardedInterstitialAdsService",
+              "description": "Servicio de precarga y presentación de anuncios recompensados (Rewarded Interstitial) de Google AdMob.",
+              "methods": [
+                {
+                  "name": "preload",
+                  "parameters": [],
+                  "description": "Precarga silenciosamente el siguiente anuncio en memoria."
+                },
+                {
+                  "name": "maybeShow",
+                  "parameters": [
+                    "placement: str",
+                    "userEmail: str?"
+                  ],
+                  "return_type": "Future<bool>",
+                  "description": "Muestra el anuncio si la plataforma es compatible y el usuario no cuenta con beneficio Ad-Free activo."
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "layer": "Screens & Features",
+          "files": [
+            "lib/features/shell/home_shell.dart",
+            "lib/features/auth/login_screen.dart",
+            "lib/features/jobs/jobs_screen.dart",
+            "lib/features/applications/applications_screen.dart",
+            "lib/features/cv/cv_prep_screen.dart",
+            "lib/features/interview/interview_prep_screen.dart",
+            "lib/features/interview/interview_chat_screen.dart",
+            "lib/features/onboarding/onboarding_screen.dart",
+            "lib/features/onboarding/onboarding_gate.dart",
+            "lib/features/legal/terms_and_conditions_screen.dart",
+            "lib/features/legal/privacy_policy_screen.dart"
+          ],
+          "screens": [
+            {
+              "name": "HomeShell",
+              "description": "Pantalla principal contenedora con BottomNavigationBar de 4 pestañas (Empleos, Postulaciones, CV, Entrevistas), escucha de autenticación, deep links y ajustes de cuenta."
+            },
+            {
+              "name": "LoginScreen",
+              "description": "Autenticación para candidatos y empresas. Formularios de login, registro de candidato con código de referido, registro de empresa interesada y recuperación de clave."
+            },
+            {
+              "name": "JobsScreen",
+              "description": "Explorador de empleo en vivo con búsqueda por geolocalización, filtros rápidos (remoto, IA, frontend, junior, full-time), vista web de vacante y opción de guardar como postulación."
+            },
+            {
+              "name": "ApplicationsScreen",
+              "description": "Tablero de seguimiento de postulaciones laborales con filtros por estado, edición de notas, eliminación y enlace directo para practicar entrevista."
+            },
+            {
+              "name": "CvPrepScreen",
+              "description": "Estudio de creación de CV con IA: formularios guiados, selección de paleta y fuentes, previsualización de borrador, compilación a PDF/DOCX y subida de archivos existentes."
+            },
+            {
+              "name": "InterviewPrepScreen",
+              "description": "Configurador de sesiones de entrevista: selección de vacante vinculada, modo de práctica (Simulación, STAR, Técnico, Salario, Preguntas Difíciles) y visualización de sesiones anteriores."
+            },
+            {
+              "name": "InterviewChatScreen",
+              "description": "Chat en tiempo real con el entrevistador IA. Proporciona puntuación numérica (0-10), retroalimentación pedagógica, respuesta modelo mejorada y resumen de sesión."
+            },
+            {
+              "name": "OnboardingScreen",
+              "description": "Carrusel de bienvenida que introduce las funcionalidades clave de la app antes del primer inicio de sesión."
+            },
+            {
+              "name": "OnboardingGate",
+              "description": "Guardia de enrutamiento que decide si mostrar el onboarding, el login o el HomeShell según el estado almacenado."
+            },
+            {
+              "name": "TermsAndConditionsScreen",
+              "description": "Visualizador scrolleable de términos y condiciones que requiere lectura hasta el final antes de permitir la aceptación."
+            },
+            {
+              "name": "PrivacyPolicyScreen",
+              "description": "Documento completo de política de privacidad y tratamiento de datos personales."
+            }
+          ]
+        },
+        {
+          "layer": "Data Models",
+          "files": [
+            "lib/models/user_profile.dart",
+            "lib/models/application_record.dart",
+            "lib/models/job_search_result.dart",
+            "lib/models/cv_draft_result.dart",
+            "lib/models/cv_generated_result.dart",
+            "lib/models/interview_coach_reply.dart",
+            "lib/models/interview_message.dart",
+            "lib/models/interview_practice_mode.dart",
+            "lib/models/interview_response_parser.dart",
+            "lib/models/interview_session.dart",
+            "lib/models/referral_status.dart"
+          ],
+          "models": [
+            {
+              "name": "UserProfile",
+              "fields": [
+                "email",
+                "firstName",
+                "lastName",
+                "phone"
+              ],
+              "description": "Datos de perfil del candidato."
+            },
+            {
+              "name": "ApplicationRecord",
+              "fields": [
+                "id",
+                "website",
+                "vacancy",
+                "status",
+                "applicationLink",
+                "description",
+                "createdAt"
+              ],
+              "description": "Postulación laboral del usuario."
+            },
+            {
+              "name": "JobSearchResult",
+              "fields": [
+                "title",
+                "company",
+                "location",
+                "summary",
+                "applyLink"
+              ],
+              "description": "Oferta de empleo encontrada mediante el motor de búsqueda."
+            },
+            {
+              "name": "CvDraftResult",
+              "fields": [
+                "draftId",
+                "outputFormat",
+                "latex",
+                "source"
+              ],
+              "description": "Borrador de código LaTeX para vista previa del CV."
+            },
+            {
+              "name": "CvGeneratedResult",
+              "fields": [
+                "fileName",
+                "outputFormat",
+                "publicUrl",
+                "storagePath",
+                "source"
+              ],
+              "description": "Archivo final de CV compilado y almacenado."
+            },
+            {
+              "name": "InterviewCoachReply",
+              "fields": [
+                "reply",
+                "coachFeedback",
+                "improvedAnswer",
+                "nextQuestion",
+                "score",
+                "tags",
+                "sessionSummary"
+              ],
+              "description": "Respuesta pedagógica y evaluación estructurada del entrevistador IA."
+            },
+            {
+              "name": "InterviewMessage",
+              "fields": [
+                "role",
+                "content",
+                "createdAt",
+                "coachFeedback",
+                "improvedAnswer",
+                "nextQuestion",
+                "score",
+                "tags",
+                "sessionSummary"
+              ],
+              "description": "Mensaje individual dentro del historial de la entrevista."
+            },
+            {
+              "name": "InterviewPracticeMode",
+              "values": [
+                "simulation",
+                "star",
+                "technical",
+                "salary",
+                "hardQuestions"
+              ],
+              "description": "Modos de práctica de entrevista laboral."
+            },
+            {
+              "name": "InterviewSession",
+              "fields": [
+                "id",
+                "applicantEmail",
+                "applicationId",
+                "mode",
+                "status",
+                "createdAt",
+                "updatedAt",
+                "lastSummary"
+              ],
+              "description": "Sesión de entrevista persistida en la base de datos."
+            },
+            {
+              "name": "ReferralStatus",
+              "fields": [
+                "referralCode",
+                "adFreeActive",
+                "adFreeUntil",
+                "adFreeDaysRemaining",
+                "referralsPending",
+                "referralsQualified",
+                "referralsRewarded",
+                "hasAppliedReferral",
+                "myReferralStatus"
+              ],
+              "description": "Estado y estadísticas del programa de referidos del usuario."
+            }
+          ]
+        },
+        {
+          "layer": "Design System & Theme",
+          "files": [
+            "lib/theme/app_theme.dart",
+            "lib/theme/design_system.dart"
+          ],
+          "description": "Definición de temas Material 3 para Flutter (colores corporativos Deep Blue y Teal, tipografía, decoraciones de inputs y tarjetas) y tokens de diseño unificados (spacing, radius, typography)."
+        },
+        {
+          "layer": "Internationalization",
+          "files": [
+            "lib/l10n/localized_text.dart",
+            "lib/l10n/localized_extras.dart"
+          ],
+          "description": "Soporte completo para 6 idiomas (Español, Inglés, Portugués, Francés, Alemán e Italiano) en toda la interfaz de usuario."
+        }
+      ]
+    }
+  ],
+  "database_tables_and_storage": {
+    "supabase_tables": [
+      {
+        "name": "Aplicants",
+        "description": "Almacena los datos personales de candidatos (Email, First_Name, Last_Name, Phone)."
+      },
+      {
+        "name": "applications",
+        "description": "Registro de postulaciones a vacantes (id, applicant_email, vaccancy, website, status, Description, application_link, added_at)."
+      },
+      {
+        "name": "ApplicantCVs",
+        "description": "Metadatos y rutas de almacenamiento de los CVs de los candidatos."
+      },
+      {
+        "name": "interview_sessions",
+        "description": "Sesiones de preparación de entrevista iniciadas por los candidatos."
+      },
+      {
+        "name": "interview_messages",
+        "description": "Historial de mensajes, puntajes y retroalimentación de las entrevistas."
+      },
+      {
+        "name": "referrals",
+        "description": "Seguimiento de códigos de referidos, estados de recompensa y días sin anuncios."
+      },
+      {
+        "name": "job_search_cache",
+        "description": "Caché de resultados de SerpAPI con TTL de 6 horas para acelerar búsquedas repetidas."
+      },
+      {
+        "name": "user_seen_jobs",
+        "description": "Huellas digitales de empleos vistos por los usuarios para evitar duplicados en búsquedas."
+      },
+      {
+        "name": "company_interest_leads",
+        "description": "Registro de empresas interesadas en publicar vacantes o contratar talento."
+      },
+      {
+        "name": "MonetizationEvents",
+        "description": "Histórico de eventos de anuncios de Google AdMob mostrados a los usuarios."
+      },
+      {
+        "name": "password_recovery_attempts",
+        "description": "Auditoría de intentos de recuperación de contraseña para mitigar ataques de fuerza bruta."
+      }
+    ],
+    "storage_buckets": [
+      {
+        "name": "applicant-cvs",
+        "description": "Bucket seguro donde se almacenan los archivos PDF y DOCX de los currículums generados y subidos."
+      }
+    ]
+  },
+  "summary_metrics": {
+    "total_modules": 6,
+    "flet_desktop_functions": 98,
+    "mobile_api_endpoints": 11,
+    "job_search_services": 1,
+    "supabase_edge_functions": 8,
+    "flutter_screens": 11,
+    "flutter_repository_methods": 30,
+    "flutter_data_models": 10,
+    "flutter_specialized_services": 4,
+    "database_tables": 11,
+    "supported_languages_count": 6
+  }
+}

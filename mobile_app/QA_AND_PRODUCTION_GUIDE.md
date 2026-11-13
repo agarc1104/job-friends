@@ -11,9 +11,7 @@ Define estas variables en tu shell, CI o en Codemagic:
 - MOBILE_API_BASE_URL
 - SERPAPI_API_KEY (si aplica a tu flujo)
 - GEMINI_API_KEY (si aplica a tu flujo)
-- ADMOB_ANDROID_BANNER_ID (opcional)
 - ADMOB_ANDROID_INTERSTITIAL_ID (opcional)
-- ADMOB_IOS_BANNER_ID (opcional)
 - ADMOB_IOS_INTERSTITIAL_ID (opcional)
 
 ## QA local en Android

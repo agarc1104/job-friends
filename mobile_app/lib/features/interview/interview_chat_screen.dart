@@ -36,6 +36,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
   final _repository = const JobFriendsRepository();
   final _rewardedInterstitialAds = RewardedInterstitialAdsService.instance;
   final _messageController = TextEditingController();
+  final _messageFocusNode = FocusNode();
   final List<Map<String, dynamic>> _history = [];
 
   bool _isLoading = true;
@@ -44,6 +45,8 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
   List<InterviewMessage> _messages = const [];
   InterviewSession? _activeSession;
   String _sessionSummary = '';
+  DateTime? _sessionStartedAt;
+  Timer? _sessionClockTimer;
 
   @override
   void initState() {
@@ -56,8 +59,27 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
 
   @override
   void dispose() {
+    _sessionClockTimer?.cancel();
     _messageController.dispose();
+    _messageFocusNode.dispose();
     super.dispose();
+  }
+
+  void _startSessionClock(DateTime startedAt) {
+    _sessionStartedAt = startedAt;
+    _sessionClockTimer?.cancel();
+    _sessionClockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  String get _sessionElapsed {
+    final startedAt = _sessionStartedAt;
+    if (startedAt == null) return '00:00';
+    final seconds = DateTime.now().difference(startedAt).inSeconds.clamp(0, 5999);
+    final minutesText = (seconds ~/ 60).toString().padLeft(2, '0');
+    final secondsText = (seconds % 60).toString().padLeft(2, '0');
+    return '$minutesText:$secondsText';
   }
 
   Future<void> _initializeChat() async {
@@ -86,6 +108,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
       _messages = messages;
       _isLoading = false;
     });
+    _startSessionClock(session.createdAt);
     _rebuildHistory();
   }
 
@@ -224,13 +247,14 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
         _isLoading = false;
         _awaitingAiFirstReply = false;
       });
+      _startSessionClock(session.createdAt);
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) return;
       setState(() {
         _isLoading = false;
         _awaitingAiFirstReply = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(localizedError(context, error.message))));
     } catch (_) {
       if (!mounted) return;
       setState(() {
@@ -238,7 +262,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
         _awaitingAiFirstReply = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo iniciar la entrevista.')),
+        SnackBar(content: Text(tr(context, 'interview.startError'))),
       );
     }
   }
@@ -339,12 +363,12 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message)),
+        SnackBar(content: Text(localizedError(context, error.message))),
       );
     } catch (_) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se pudo generar respuesta de entrevista.')),
+        SnackBar(content: Text(tr(context, 'interview.replyError'))),
       );
     } finally {
       if (mounted) {
@@ -364,7 +388,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
     if (application == null) {
       if (!mounted) return null;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se guardan chats de vacantes eliminadas.')),
+        SnackBar(content: Text(tr(context, 'interview.deletedChatError'))),
       );
       return null;
     }
@@ -372,7 +396,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
     if (application.isOlderThanThreeMonths) {
       if (!mounted) return null;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No se guardan chats de vacantes con mas de 3 meses desde la postulacion.')),
+        SnackBar(content: Text(tr(context, 'interview.expiredChatError'))),
       );
       return null;
     }
@@ -389,19 +413,167 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
   }
 
   void _showSessionReport() {
-    showDialog(
+    double? latestScore;
+    final takeaways = <String>{};
+    for (final message in _messages.reversed) {
+      if (latestScore == null && !message.isUser && message.score != null) {
+        latestScore = message.score;
+      }
+      if (!message.isUser) takeaways.addAll(message.tags);
+    }
+
+    showModalBottomSheet<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(tr(context, 'interview.sessionReport')),
-        content: SingleChildScrollView(
-          child: Text(
-            _sessionSummary.isEmpty ? tr(context, 'interview.noSessionData') : _sessionSummary,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(child: Text(tr(context, 'interview.sessionReport'), style: Theme.of(context).textTheme.titleLarge)),
+                  IconButton(
+                    tooltip: tr(context, 'common.close'),
+                    onPressed: () => Navigator.pop(sheetContext),
+                    icon: const Icon(Icons.close_rounded),
+                  ),
+                ],
+              ),
+              if (latestScore != null) ...[
+                const SizedBox(height: AppSpacing.xs),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(tr(context, 'interview.eval.score'), style: Theme.of(context).textTheme.bodyMedium),
+                    ),
+                    Text(
+                      '${latestScore.toStringAsFixed(1)} / 10',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(color: AppColors.primaryActive),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.xs),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(999),
+                  child: LinearProgressIndicator(
+                    value: (latestScore.clamp(0, 10) / 10).toDouble(),
+                    minHeight: 8,
+                  ),
+                ),
+              ],
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                _sessionSummary.isEmpty ? tr(context, 'interview.noSessionData') : _sessionSummary,
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              if (takeaways.isNotEmpty) ...[
+                const SizedBox(height: AppSpacing.sm),
+                Text(tr(context, 'interview.eval.takeaways'), style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: AppSpacing.xs),
+                Wrap(
+                  spacing: AppSpacing.xs,
+                  runSpacing: AppSpacing.xs,
+                  children: takeaways.map((tag) => Chip(label: Text(tag))).toList(),
+                ),
+              ],
+              const SizedBox(height: AppSpacing.md),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(sheetContext);
+                    _finishEarly();
+                  },
+                  icon: const Icon(Icons.bookmark_add_outlined),
+                  label: Text(tr(context, 'interview.eval.save')),
+                ),
+              ),
+            ],
           ),
         ),
+      ),
+    );
+  }
+
+  Future<void> _finishEarly() async {
+    final session = _activeSession;
+    final application = widget.application;
+    if (session == null) return;
+
+    final shouldFinish = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(tr(context, 'interview.finish.title')),
+        content: Text(tr(context, 'interview.finish.body')),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(tr(context, 'common.close')),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(tr(dialogContext, 'common.cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(tr(context, 'interview.finish.cta')),
+          ),
+        ],
+      ),
+    );
+    if (shouldFinish != true || !mounted) return;
+
+    if (application != null) {
+      try {
+        await _repository.archiveActiveInterviewSession(
+          applicantEmail: widget.currentUser.email,
+          applicationId: application.id,
+          mode: session.mode,
+        );
+      } catch (_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(tr(context, 'interview.couldNotSaveSession'))),
+        );
+        return;
+      }
+    }
+
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  Widget _buildVoiceVisualizer(BuildContext context) {
+    final isThinking = _isSending || _awaitingAiFirstReply;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: AppSpacing.sm, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.softBlue,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          ...List.generate(7, (index) {
+            final isActive = isThinking && index.isEven;
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              width: 3,
+              height: isActive ? 22 : 9 + index % 3 * 3,
+              margin: const EdgeInsets.only(right: 3),
+              decoration: BoxDecoration(
+                color: isThinking ? AppColors.cyan : AppColors.primary,
+                borderRadius: BorderRadius.circular(999),
+              ),
+            );
+          }),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+                isThinking
+                  ? tr(context, 'interview.voice.thinking')
+                  : tr(context, 'interview.voice.active', args: {'time': _sessionElapsed}),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
           ),
         ],
       ),
@@ -447,19 +619,23 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(application?.vacancy ?? 'Vacante eliminada'),
+        title: Text(
+          application?.vacancy ?? tr(context, 'interview.deletedJob'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
         actions: [
           if (session != null)
-            Padding(
-              padding: const EdgeInsets.only(right: AppSpacing.xs),
-              child: SizedBox(
-                width: 108,
-                child: FilledButton.tonalIcon(
-                  onPressed: _showSessionReport,
-                  icon: const Icon(Icons.assessment_outlined, size: 18),
-                  label: Text(tr(context, 'common.report')),
-                ),
-              ),
+            IconButton(
+              tooltip: tr(context, 'interview.finish.title'),
+              onPressed: _finishEarly,
+              icon: const Icon(Icons.stop_circle_outlined),
+            ),
+          if (session != null)
+            IconButton(
+              tooltip: tr(context, 'common.report'),
+              onPressed: _showSessionReport,
+              icon: const Icon(Icons.assessment_outlined),
             ),
         ],
       ),
@@ -493,7 +669,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                                       style: Theme.of(context).textTheme.labelMedium,
                                     ),
                                     Text(
-                                      '$userTurns/$totalSteps',
+                                      _sessionElapsed,
                                       style: Theme.of(context).textTheme.labelMedium,
                                     ),
                                   ],
@@ -505,12 +681,14 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                           ),
                         ),
                       const SizedBox(height: AppSpacing.sm),
+                      _buildVoiceVisualizer(context),
+                      const SizedBox(height: AppSpacing.sm),
                       if (_messages.isEmpty && application == null)
                         Card(
                           child: Padding(
                             padding: const EdgeInsets.all(AppSpacing.lg),
                             child: Text(
-                              'Esta vacante fue eliminada. Puedes revisar el historial, pero para continuar debes iniciar un nuevo chat.',
+                              tr(context, 'interview.deletedJobNotice'),
                               style: Theme.of(context).textTheme.bodyMedium,
                             ),
                           ),
@@ -531,10 +709,13 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                                 padding: const EdgeInsets.all(AppSpacing.sm),
                                 constraints: BoxConstraints(maxWidth: maxBubbleWidth),
                                 decoration: BoxDecoration(
-                                  color: isUser ? AppColors.softGreen : AppColors.surface,
-                                  borderRadius: BorderRadius.circular(AppRadii.sm),
+                                  color: isUser ? null : const Color(0xFFF1F5F9),
+                                  gradient: isUser
+                                      ? const LinearGradient(colors: [AppColors.primary, AppColors.cyan])
+                                      : null,
+                                  borderRadius: BorderRadius.circular(20),
                                   border: Border.all(
-                                    color: isUser ? AppColors.softGreenBorder : AppColors.softSurfaceBorder,
+                                    color: isUser ? Colors.transparent : AppColors.softSurfaceBorder,
                                   ),
                                   boxShadow: AppShadows.card,
                                 ),
@@ -544,11 +725,14 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                                     Text(
                                       isUser ? tr(context, 'interview.you') : tr(context, 'interview.ai'),
                                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                                            color: isUser ? AppColors.primaryActive : AppColors.secondaryText,
+                                          color: isUser ? Colors.white70 : AppColors.secondaryText,
                                           ),
                                     ),
                                     const SizedBox(height: 4),
-                                    Text(item.content),
+                                    Text(
+                                      item.content,
+                                      style: TextStyle(color: isUser ? Colors.white : AppColors.bodyText),
+                                    ),
                                     if (!isUser && item.coachFeedback.trim().isNotEmpty) ...[
                                       const SizedBox(height: AppSpacing.xs),
                                       _buildInfoBlock(
@@ -626,6 +810,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                                   const SizedBox(height: 4),
                                   TextField(
                                     controller: _messageController,
+                                    focusNode: _messageFocusNode,
                                     maxLines: null,
                                     textInputAction: TextInputAction.send,
                                     onSubmitted: (_) {
@@ -636,7 +821,7 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                                     decoration: InputDecoration(
                                       hintText: composerEnabled
                                           ? tr(context, 'interview.answerHint')
-                                          : 'Sesion en solo lectura. Inicia un nuevo chat.',
+                                          : tr(context, 'interview.readOnlySession'),
                                       border: InputBorder.none,
                                       filled: false,
                                     ),
@@ -663,6 +848,19 @@ class _InterviewChatScreenState extends State<InterviewChatScreen> {
                               ),
                             ),
                           ],
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: composerEnabled
+                              ? () {
+                                  _messageController.text = 'Ayúdame a estructurar una respuesta con el método STAR.';
+                                  _messageFocusNode.requestFocus();
+                                }
+                              : null,
+                          icon: const Icon(Icons.auto_awesome_rounded, size: 18),
+                          label: const Text('Sugerir estructura STAR'),
                         ),
                       ),
                     ],

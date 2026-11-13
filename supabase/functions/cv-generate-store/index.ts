@@ -57,6 +57,57 @@ function babelLanguageFor(language: SupportedLanguage): string {
   }
 }
 
+function cvSectionTitlesFor(language: SupportedLanguage): string[] {
+  switch (language) {
+    case "en":
+      return ["Summary", "Experience", "Education", "Skills", "Projects"];
+    case "pt":
+      return ["Resumo", "Experiencia", "Educacao", "Competencias", "Projetos"];
+    case "fr":
+      return ["Resume", "Experience", "Formation", "Competences", "Projets"];
+    case "de":
+      return ["Zusammenfassung", "Berufserfahrung", "Ausbildung", "Kompetenzen", "Projekte"];
+    case "it":
+      return ["Profilo", "Esperienza", "Formazione", "Competenze", "Progetti"];
+    case "es":
+    default:
+      return ["Resumen", "Experiencia", "Educacion", "Habilidades", "Proyectos"];
+  }
+}
+
+function localizedCvDefault(
+  language: SupportedLanguage,
+  key: "professional" | "notSpecified" | "notSpecifiedPlural",
+): string {
+  switch (language) {
+    case "en":
+      if (key === "professional") return "Professional";
+      if (key === "notSpecified") return "Not specified";
+      return "Not specified";
+    case "pt":
+      if (key === "professional") return "Profissional";
+      if (key === "notSpecified") return "Nao especificado";
+      return "Nao especificadas";
+    case "fr":
+      if (key === "professional") return "Professionnel";
+      if (key === "notSpecified") return "Non specifie";
+      return "Non specifiees";
+    case "de":
+      if (key === "professional") return "Fachkraft";
+      if (key === "notSpecified") return "Nicht angegeben";
+      return "Nicht angegeben";
+    case "it":
+      if (key === "professional") return "Professionista";
+      if (key === "notSpecified") return "Non specificato";
+      return "Non specificate";
+    case "es":
+    default:
+      if (key === "professional") return "Profesional";
+      if (key === "notSpecified") return "No especificada";
+      return "No especificadas";
+  }
+}
+
 function logCvTrace(stage: string, detail: Record<string, unknown> = {}): void {
   const payload = {
     ts: new Date().toISOString(),
@@ -160,14 +211,92 @@ function hasPlaceholderSignals(value: string): boolean {
   return /tu nombre|your name|john doe|nombre apellido|año\s*-\s*presente|empresa líder|ciudad, país/.test(text);
 }
 
-function looksPersonalizedForUser(value: string, fullName: string, email: string): boolean {
+function splitFullName(fullName: string): { firstName: string; lastName: string } {
+  const tokens = normalizeText(fullName)
+    .split(" ")
+    .map((token) => token.trim())
+    .filter((token) => token.length > 0);
+
+  if (tokens.length === 0) {
+    return { firstName: "", lastName: "" };
+  }
+
+  if (tokens.length === 1) {
+    return { firstName: tokens[0], lastName: "" };
+  }
+
+  return {
+    firstName: tokens.slice(0, -1).join(" "),
+    lastName: tokens[tokens.length - 1],
+  };
+}
+
+function ensureModernCvIdentityBlock(
+  latex: string,
+  identity: { fullName: string; email: string; phone: string; linkedin: string },
+): string {
+  let updated = latex;
+  const { firstName, lastName } = splitFullName(identity.fullName);
+  const safeFirstName = toSafeLatexInline(firstName || identity.fullName || "Candidato");
+  const safeLastName = toSafeLatexInline(lastName);
+  const safeEmail = toSafeLatexInline(identity.email);
+  const safePhone = toSafeLatexInline(identity.phone);
+  const safeLinkedin = toSafeLatexInline(identity.linkedin);
+
+  // Normalize legacy moderncv name commands to a single \name line.
+  updated = updated
+    .replace(/^\s*\\firstname\{[^}]*\}\s*\n?/gim, "")
+    .replace(/^\s*\\familyname\{[^}]*\}\s*\n?/gim, "");
+
+  if (/\\name\{[^}]*\}\{[^}]*\}/i.test(updated)) {
+    updated = updated.replace(/\\name\{[^}]*\}\{[^}]*\}/i, `\\name{${safeFirstName}}{${safeLastName}}`);
+  } else {
+    updated = updated.replace(/\\begin\{document\}/i, `\\name{${safeFirstName}}{${safeLastName}}\n\\begin{document}`);
+  }
+
+  if (safeEmail) {
+    if (/\\email\{[^}]*\}/i.test(updated)) {
+      updated = updated.replace(/\\email\{[^}]*\}/i, `\\email{${safeEmail}}`);
+    } else {
+      updated = updated.replace(/\\name\{[^}]*\}\{[^}]*\}\n?/i, (match: string) => `${match}\\email{${safeEmail}}\n`);
+    }
+  }
+
+  if (safePhone) {
+    if (/\\phone(?:\[[^\]]*\])?\{[^}]*\}/i.test(updated)) {
+      updated = updated.replace(/\\phone(?:\[[^\]]*\])?\{[^}]*\}/i, `\\phone[mobile]{${safePhone}}`);
+    } else {
+      updated = updated.replace(/\\name\{[^}]*\}\{[^}]*\}\n?/i, (match: string) => `${match}\\phone[mobile]{${safePhone}}\n`);
+    }
+  }
+
+  if (safeLinkedin) {
+    if (/\\social\[linkedin\]\{[^}]*\}/i.test(updated)) {
+      updated = updated.replace(/\\social\[linkedin\]\{[^}]*\}/i, `\\social[linkedin]{${safeLinkedin}}`);
+    } else {
+      updated = updated.replace(/\\name\{[^}]*\}\{[^}]*\}\n?/i, (match: string) => `${match}\\social[linkedin]{${safeLinkedin}}\n`);
+    }
+  }
+
+  if (!/\\makecvtitle/i.test(updated)) {
+    updated = updated.replace(/\\begin\{document\}\s*/i, "\\begin{document}\n\\makecvtitle\n");
+  }
+
+  return updated;
+}
+
+function looksPersonalizedForUser(value: string, fullName: string, email: string, phone: string): boolean {
   const normalizedLatex = normalizeText(value).toLowerCase();
   const normalizedEmail = normalizeText(email).toLowerCase();
   const normalizedName = normalizeText(fullName).toLowerCase();
+  const normalizedPhoneDigits = normalizeText(phone).replace(/\D/g, "");
+  const normalizedLatexDigits = normalizedLatex.replace(/\D/g, "");
   const nameTokens = normalizedName.split(" ").filter((token) => token.length >= 3);
   const hasEmail = normalizedEmail.length > 0 && normalizedLatex.includes(normalizedEmail);
   const hasNameToken = nameTokens.length === 0 || nameTokens.some((token) => normalizedLatex.includes(token));
-  return hasEmail && hasNameToken && !hasPlaceholderSignals(normalizedLatex);
+  const hasPhone = normalizedPhoneDigits.length === 0 || normalizedLatexDigits.includes(normalizedPhoneDigits);
+  const hasIdentityCommands = /\\name\{[^}]+\}\{[^}]*\}/i.test(value) && /\\makecvtitle/i.test(value);
+  return hasEmail && hasNameToken && hasPhone && hasIdentityCommands && !hasPlaceholderSignals(normalizedLatex);
 }
 
 function toSafeLatexInline(value: string): string {
@@ -289,6 +418,121 @@ function sanitizeLatexForCompilation(latex: string): string {
   return hardened.latex;
 }
 
+function escapeLatexText(value: string): string {
+  return normalizeText(value)
+    .replace(/\\/g, "\\textbackslash{}")
+    .replace(/([{}$&#_%])/g, "\\$1")
+    .replace(/\^/g, "\\textasciicircum{}")
+    .replace(/~/g, "\\textasciitilde{}");
+}
+
+function truncateForLatex(value: string, maxLength = 1400): string {
+  const normalized = normalizeText(value);
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function fallbackSectionTitle(language: SupportedLanguage, key: "summary" | "experience" | "education" | "skills" | "additional"): string {
+  switch (language) {
+    case "en":
+      if (key === "summary") return "Professional Summary";
+      if (key === "experience") return "Experience";
+      if (key === "education") return "Education";
+      if (key === "skills") return "Skills";
+      return "Additional Information";
+    case "pt":
+      if (key === "summary") return "Resumo Profissional";
+      if (key === "experience") return "Experiencia";
+      if (key === "education") return "Educacao";
+      if (key === "skills") return "Competencias";
+      return "Informacoes Adicionais";
+    case "fr":
+      if (key === "summary") return "Resume Professionnel";
+      if (key === "experience") return "Experience";
+      if (key === "education") return "Formation";
+      if (key === "skills") return "Competences";
+      return "Informations Supplementaires";
+    case "de":
+      if (key === "summary") return "Berufliches Profil";
+      if (key === "experience") return "Berufserfahrung";
+      if (key === "education") return "Ausbildung";
+      if (key === "skills") return "Kompetenzen";
+      return "Weitere Informationen";
+    case "it":
+      if (key === "summary") return "Profilo Professionale";
+      if (key === "experience") return "Esperienza";
+      if (key === "education") return "Formazione";
+      if (key === "skills") return "Competenze";
+      return "Informazioni Aggiuntive";
+    case "es":
+    default:
+      if (key === "summary") return "Resumen Profesional";
+      if (key === "experience") return "Experiencia";
+      if (key === "education") return "Educacion";
+      if (key === "skills") return "Habilidades";
+      return "Informacion Adicional";
+  }
+}
+
+function buildPortableFallbackLatex(
+  fullName: string,
+  email: string,
+  profileData: ProfileData,
+  language: SupportedLanguage,
+): string {
+  const phone = truncateForLatex(profileData.phone || profileData.Phone || "", 80);
+  const linkedin = truncateForLatex(profileData.linkedin || "", 120);
+  const role = truncateForLatex(profileData.target_roles || localizedCvDefault(language, "professional"), 200);
+  const summary = truncateForLatex(profileData.summary || localizedCvDefault(language, "notSpecified"));
+  const experience = truncateForLatex(profileData.experience || localizedCvDefault(language, "notSpecified"));
+  const education = truncateForLatex(profileData.education || localizedCvDefault(language, "notSpecified"));
+  const skills = truncateForLatex(profileData.skills || localizedCvDefault(language, "notSpecifiedPlural"));
+  const languages = truncateForLatex(profileData.languages || "", 500);
+  const certifications = truncateForLatex(profileData.certifications || "", 500);
+  const achievements = truncateForLatex(profileData.achievements || "", 500);
+
+  const additionalLines = [languages, certifications, achievements]
+    .filter((value) => normalizeText(value).length > 0)
+    .map((value) => `\\item ${escapeLatexText(value)}`)
+    .join("\n");
+
+  return String.raw`\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1.9cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.35em}
+
+\begin{document}
+{\LARGE \textbf{${escapeLatexText(fullName)}}}\\
+\href{mailto:${escapeLatexText(email)}}{${escapeLatexText(email)}}\\
+${phone ? `${escapeLatexText(phone)}\\` : ""}
+${linkedin ? `${escapeLatexText(linkedin)}\\` : ""}
+${escapeLatexText(role)}
+
+\section*{${escapeLatexText(fallbackSectionTitle(language, "summary"))}}
+${escapeLatexText(summary)}
+
+\section*{${escapeLatexText(fallbackSectionTitle(language, "experience"))}}
+${escapeLatexText(experience)}
+
+\section*{${escapeLatexText(fallbackSectionTitle(language, "education"))}}
+${escapeLatexText(education)}
+
+\section*{${escapeLatexText(fallbackSectionTitle(language, "skills"))}}
+${escapeLatexText(skills)}
+
+${additionalLines.length > 0
+    ? `\\section*{${escapeLatexText(fallbackSectionTitle(language, "additional"))}}\n\\begin{itemize}\n${additionalLines}\n\\end{itemize}`
+    : ""}
+
+\end{document}`;
+}
+
 function verifyVisualCompliance(
   latex: string,
   visual: { fontSizePt: string; moderncvColor: string; useTwoColumns: boolean },
@@ -329,14 +573,19 @@ async function buildLatex(
   profileData: ProfileData,
   language: SupportedLanguage,
 ): Promise<string> {
-  const phone = normalizeText(profileData.phone);
+  const phone = normalizeText(profileData.phone || profileData.Phone);
   const linkedin = normalizeText(profileData.linkedin);
-  const targetRoles = normalizeText(profileData.target_roles) || "Profesional";
-  const experience = normalizeText(profileData.experience) || "No especificada";
-  const education = normalizeText(profileData.education) || "No especificada";
-  const skills = normalizeText(profileData.skills) || "No especificadas";
+  const targetRoles =
+    normalizeText(profileData.target_roles) || localizedCvDefault(language, "professional");
+  const experience =
+    normalizeText(profileData.experience) || localizedCvDefault(language, "notSpecified");
+  const education =
+    normalizeText(profileData.education) || localizedCvDefault(language, "notSpecified");
+  const skills =
+    normalizeText(profileData.skills) || localizedCvDefault(language, "notSpecifiedPlural");
   const jobDescription = normalizeText(profileData.job_description);
   const contact = [email, phone, linkedin].filter(Boolean).join(", ");
+  const requiredSections = cvSectionTitlesFor(language).join(", ");
 
   // --- Visual design preferences ---
   const rawFontSize = normalizeText(profileData.cv_font_size).toLowerCase();
@@ -381,6 +630,8 @@ async function buildLatex(
     "- NO usar \\setmainfont.\n" +
     "- NO usar \\firstname ni \\familyname.\n" +
     "- Usar \\name{Nombre}{Apellido}.\n" +
+    "- Incluir \\makecvtitle inmediatamente después de \\begin{document}.\n" +
+    "- Incluir \\email{...} con el email exacto del candidato.\n" +
     "- Para teléfono usar únicamente \\phone[mobile]{...}; si falta dato, omitir la línea completa (no dejarla vacía).\n" +
     "- Mantener preámbulo mínimo y estable para moderncv.\n" +
     "- NO usar \\cvsection; para títulos de sección usar únicamente \\section{...}.\n\n" +
@@ -396,7 +647,7 @@ async function buildLatex(
     `IDIOMA DE SALIDA OBLIGATORIO: TODO el contenido del CV (titulos, resumen, bullets, educacion, habilidades y proyectos) debe estar en ${languageName}.\n\n` +
     "Usa el bloque universal de preambulo para LaTeX con babel y fuentes Noto Sans.\n\n" +
     "Todos los comandos \\cventry deben tener exactamente SEIS argumentos {...}{...}{...}{...}{...}{...}. Si un dato falta, usa corchetes vacíos {}.\n\n" +
-    "Estructura el documento con secciones de: Resumen, Experiencia, Educación, Habilidades y Proyectos.\n\n" +
+    `Estructura el documento con secciones de: ${requiredSections}.\n\n` +
     "No uses placeholders ni datos ficticios como 'Tu Nombre', 'John Doe', 'Ciudad, País', 'Empresa líder' o similares.\n\n" +
     twoColumnsSection +
     "Reglas críticas de veracidad (OBLIGATORIAS):\n" +
@@ -433,7 +684,7 @@ async function buildLatex(
     temperature: 0.1,
     maxOutputTokens: 2800,
     minOutputLength: 500,
-    requiredSubstrings: ["\\documentclass", "\\begin{document}"],
+    requiredSubstrings: ["\\documentclass", "\\begin{document}", "\\name{", "\\email{", "\\makecvtitle"],
   });
 
   logCvTrace("buildLatex.gemini_raw_response", {
@@ -442,28 +693,42 @@ async function buildLatex(
   });
 
   const cleaned = ensureLatexDocumentClosed(extractLatexDocument(raw));
+  const identityEnforced = ensureModernCvIdentityBlock(cleaned, {
+    fullName,
+    email,
+    phone,
+    linkedin,
+  });
   logCvTrace("buildLatex.cleaned_latex", {
     cleanedLength: cleaned.length,
     cleanedPreview: cleaned.slice(0, 1200),
     hasDocumentClass: cleaned.includes("\\documentclass"),
     hasBeginDocument: cleaned.includes("\\begin{document}"),
     hasEndDocument: cleaned.includes("\\end{document}"),
+    identityEnforcedLength: identityEnforced.length,
   });
 
-  const visualCompliance = verifyVisualCompliance(cleaned, { fontSizePt, moderncvColor, useTwoColumns });
+  const visualCompliance = verifyVisualCompliance(identityEnforced, { fontSizePt, moderncvColor, useTwoColumns });
 
-  if (looksLikeLatexDocument(cleaned) && looksPersonalizedForUser(cleaned, fullName, email) && visualCompliance.ok) {
+  if (
+    looksLikeLatexDocument(identityEnforced) &&
+    looksPersonalizedForUser(identityEnforced, fullName, email, phone) &&
+    visualCompliance.ok
+  ) {
     logCvTrace("buildLatex.validation_success", {
       isLatex: true,
       personalized: true,
       visualCompliance: visualCompliance.ok,
     });
-    return cleaned;
+    return identityEnforced;
   }
 
   const visualRequiredSubstrings = [
     "\\documentclass",
     "\\begin{document}",
+    "\\name{",
+    "\\email{",
+    "\\makecvtitle",
     `\\moderncvcolor{${moderncvColor}}`,
   ];
   if (useTwoColumns) {
@@ -495,18 +760,29 @@ async function buildLatex(
   });
 
   const repairCleaned = ensureLatexDocumentClosed(extractLatexDocument(repairRaw));
-  const repairVisualCompliance = verifyVisualCompliance(repairCleaned, { fontSizePt, moderncvColor, useTwoColumns });
+  const repairIdentityEnforced = ensureModernCvIdentityBlock(repairCleaned, {
+    fullName,
+    email,
+    phone,
+    linkedin,
+  });
+  const repairVisualCompliance = verifyVisualCompliance(repairIdentityEnforced, {
+    fontSizePt,
+    moderncvColor,
+    useTwoColumns,
+  });
 
   logCvTrace("buildLatex.repair_attempt.result", {
     rawLength: repairRaw.length,
     cleanedLength: repairCleaned.length,
+    identityEnforcedLength: repairIdentityEnforced.length,
     visualCompliance: repairVisualCompliance.ok,
     visualMissing: repairVisualCompliance.missing,
   });
 
   if (
-    looksLikeLatexDocument(repairCleaned) &&
-    looksPersonalizedForUser(repairCleaned, fullName, email) &&
+    looksLikeLatexDocument(repairIdentityEnforced) &&
+    looksPersonalizedForUser(repairIdentityEnforced, fullName, email, phone) &&
     repairVisualCompliance.ok
   ) {
     logCvTrace("buildLatex.validation_success", {
@@ -515,12 +791,12 @@ async function buildLatex(
       visualCompliance: true,
       strategy: "repair_attempt",
     });
-    return repairCleaned;
+    return repairIdentityEnforced;
   }
 
   logCvTrace("buildLatex.validation_failed", {
-    isLatex: looksLikeLatexDocument(cleaned),
-    personalized: looksPersonalizedForUser(cleaned, fullName, email),
+    isLatex: looksLikeLatexDocument(identityEnforced),
+    personalized: looksPersonalizedForUser(identityEnforced, fullName, email, phone),
     visualCompliance: visualCompliance.ok,
     visualMissing: visualCompliance.missing,
   });
@@ -776,7 +1052,26 @@ async function renderDocxFromLatex(latex: string): Promise<Uint8Array> {
   let docChildren: DocChild[];
 
   if (useTwoColumns) {
-    const LEFT_KEYWORDS = ["resumen", "objetivo", "experiencia", "educación", "educacion", "perfil"];
+    const LEFT_KEYWORDS = [
+      "resumen",
+      "summary",
+      "resume",
+      "zusammenfassung",
+      "profilo",
+      "perfil",
+      "objectif",
+      "objetivo",
+      "experience",
+      "experiencia",
+      "esperienza",
+      "berufserfahrung",
+      "educacion",
+      "educacao",
+      "education",
+      "formation",
+      "ausbildung",
+      "formazione",
+    ];
     const isLeft = (title: string) =>
       LEFT_KEYWORDS.some((kw) => title.toLowerCase().includes(kw));
 
@@ -862,9 +1157,11 @@ serve(async (req: Request) => {
   }
 
   try {
-    const { full_name, email, profile_data, output_format, language_code, locale } = await req.json();
+    const { full_name, email, profile_data, output_format, language_code, locale, mode, draft_id } = await req.json();
     const profileData = (profile_data ?? {}) as ProfileData;
     const language = resolveSupportedLanguage(language_code, locale);
+    const normalizedMode = normalizeText(mode).toLowerCase() || "final";
+    const normalizedDraftId = normalizeText(draft_id);
 
     logCvTrace("request.payload_parsed", {
       full_name,
@@ -923,6 +1220,8 @@ serve(async (req: Request) => {
       fullName,
       normalizedOutputFormat,
       language,
+      normalizedMode,
+      normalizedDraftId,
     });
 
     const latexContent = await buildLatex(fullName, normalizedEmail, profileData, language);
@@ -935,12 +1234,76 @@ serve(async (req: Request) => {
       sanitizedPreview: sanitizedLatexContent.slice(0, 1200),
     });
 
+    if (normalizedMode === "draft") {
+      const draftId = `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}_${sanitizeStorageName(normalizedEmail)}_${sanitizeStorageName(fullName || normalizedEmail)}`;
+
+      const draftMetadataPayload = {
+        applicant_email: normalizedEmail,
+        file_name: `draft_cv_${sanitizeStorageName(fullName || normalizedEmail)}.tex`,
+        storage_path: `drafts/${draftId}.tex`,
+        public_url: "",
+        source: "draft",
+        draft_id: draftId,
+        target_roles: normalizeText(profileData.target_roles),
+        profile_data: profileData,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: draftMetadataError } = await supabase
+        .from(CV_METADATA_TABLE)
+        .upsert(draftMetadataPayload, { onConflict: "applicant_email" });
+
+      if (draftMetadataError) {
+        logCvTrace("metadata.draft_upsert_error", {
+          applicant_email: normalizedEmail,
+          message: draftMetadataError.message,
+        });
+      } else {
+        logCvTrace("metadata.draft_upsert_success", {
+          applicant_email: normalizedEmail,
+          draftId,
+        });
+      }
+
+      logCvTrace("request.draft_returned", {
+        draftId,
+        latexLength: sanitizedLatexContent.length,
+        output_format: normalizedOutputFormat,
+      });
+
+      return new Response(
+        JSON.stringify({
+          draft_id: draftId,
+          latex: sanitizedLatexContent,
+          output_format: normalizedOutputFormat,
+          source: "draft",
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
+
     let fileBytes: Uint8Array;
     let extension: string;
     let contentType: string;
 
     if (normalizedOutputFormat === "pdf") {
-      fileBytes = await compileLatexToPdf(sanitizedLatexContent);
+      try {
+        fileBytes = await compileLatexToPdf(sanitizedLatexContent);
+      } catch (primaryCompileError) {
+        logCvTrace("compileLatexToPdf.primary_failed_using_fallback", {
+          error: String(primaryCompileError),
+        });
+        const portableFallbackLatex = buildPortableFallbackLatex(
+          fullName,
+          normalizedEmail,
+          profileData,
+          language,
+        );
+        fileBytes = await compileLatexToPdf(portableFallbackLatex);
+        logCvTrace("compileLatexToPdf.fallback_success", {
+          bytes: fileBytes.length,
+        });
+      }
       extension = "pdf";
       contentType = "application/pdf";
     } else if (normalizedOutputFormat === "docx") {
@@ -1000,6 +1363,7 @@ serve(async (req: Request) => {
       storage_path: storagePath,
       public_url: urlData.publicUrl,
       source: "ai_generated",
+      draft_id: normalizedDraftId,
       target_roles: normalizeText(profileData.target_roles),
       profile_data: profileData,
       updated_at: new Date().toISOString(),

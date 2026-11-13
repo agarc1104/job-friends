@@ -43,13 +43,17 @@ ThemeData buildJobFriendsTheme() {
     ),
     textTheme: Typography.blackMountainView.copyWith(
       displayLarge: const TextStyle(
-        fontSize: 34,
-        fontWeight: FontWeight.w700,
+        fontFamily: 'Plus Jakarta Sans',
+        fontSize: 30,
+        fontWeight: FontWeight.w800,
+        height: 1.2,
         color: AppColors.navy,
       ),
       headlineMedium: const TextStyle(
+        fontFamily: 'Plus Jakarta Sans',
         fontSize: 22,
-        fontWeight: FontWeight.w600,
+        fontWeight: FontWeight.w700,
+        height: 1.25,
         color: AppColors.navy,
       ),
       bodyLarge: const TextStyle(
@@ -58,14 +62,28 @@ ThemeData buildJobFriendsTheme() {
         color: AppColors.navy,
       ),
       bodyMedium: const TextStyle(
-        fontSize: 16,
+        fontSize: 14,
         fontWeight: FontWeight.w400,
-        color: AppColors.navy,
+        color: AppColors.bodyText,
+        height: 1.45,
       ),
       labelSmall: const TextStyle(
-        fontSize: 13,
+        fontSize: 12,
         fontWeight: FontWeight.w500,
         color: AppColors.secondaryText,
+        height: 1.4,
+      ),
+      titleLarge: const TextStyle(
+        fontSize: 22,
+        fontWeight: FontWeight.w700,
+        height: 1.25,
+        color: AppColors.navy,
+      ),
+      titleMedium: const TextStyle(
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        height: 1.3,
+        color: AppColors.navy,
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
@@ -150,6 +168,14 @@ ThemeData buildJobFriendsTheme() {
       secondaryLabelStyle: const TextStyle(
         color: Colors.white,
         fontWeight: FontWeight.w600,
+      ),
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(AppRadii.modal),
+        ),
       ),
     ),
     navigationBarTheme: NavigationBarThemeData(

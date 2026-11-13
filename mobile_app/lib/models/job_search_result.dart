@@ -37,16 +37,16 @@ class JobSearchResult {
     return JobSearchResult(
       title: data['title']?.toString().trim().isNotEmpty == true
           ? data['title'].toString().trim()
-          : 'Vacante sin titulo',
+          : 'Untitled job',
       company: data['company_name']?.toString().trim().isNotEmpty == true
           ? data['company_name'].toString().trim()
-          : (data['detected_extensions']?['posted_by']?.toString().trim() ?? 'Empresa no disponible'),
+          : (data['detected_extensions']?['posted_by']?.toString().trim() ?? 'Company unavailable'),
       location: data['location']?.toString().trim().isNotEmpty == true
           ? data['location'].toString().trim()
-          : 'Ubicacion no disponible',
+          : 'Location unavailable',
       summary: summary.isNotEmpty
           ? summary
-          : (highlights.isEmpty ? 'Sin descripcion adicional.' : highlights.join(' • ')),
+          : (highlights.isEmpty ? 'No additional description.' : highlights.join(' • ')),
       applyLink: firstApply?['link']?.toString() ??
           data['share_link']?.toString() ??
           '#',

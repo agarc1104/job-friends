@@ -6,12 +6,18 @@ class AppConfig {
   static late String _supabaseAnonKey;
   static late String _supabaseKey;
   static late String mobileApiBaseUrl;
+  static late String inviteLandingUrl;
+  static late String androidStoreUrl;
+  static late String iosStoreUrl;
   static late String environment;
 
   static const String _envSupabaseUrl = String.fromEnvironment('SUPABASE_URL');
   static const String _envSupabaseAnonKey = String.fromEnvironment('SUPABASE_ANON_KEY');
   static const String _envSupabaseKey = String.fromEnvironment('SUPABASE_KEY');
   static const String _envMobileApiBaseUrl = String.fromEnvironment('MOBILE_API_BASE_URL');
+  static const String _envInviteLandingUrl = String.fromEnvironment('INVITE_LANDING_URL');
+  static const String _envAndroidStoreUrl = String.fromEnvironment('ANDROID_STORE_URL');
+  static const String _envIosStoreUrl = String.fromEnvironment('IOS_STORE_URL');
   static const String _envEnvironment = String.fromEnvironment('ENVIRONMENT');
 
   static Future<void> initialize({String envFile = '.env'}) async {
@@ -29,7 +35,19 @@ class AppConfig {
     final rawMobileApiBaseUrl = _envMobileApiBaseUrl.isNotEmpty
       ? _envMobileApiBaseUrl
       : (dotenv.env['MOBILE_API_BASE_URL'] ?? '');
+    final rawInviteLandingUrl = _envInviteLandingUrl.isNotEmpty
+      ? _envInviteLandingUrl
+      : (dotenv.env['INVITE_LANDING_URL'] ?? '');
+    final rawAndroidStoreUrl = _envAndroidStoreUrl.isNotEmpty
+      ? _envAndroidStoreUrl
+      : (dotenv.env['ANDROID_STORE_URL'] ?? '');
+    final rawIosStoreUrl = _envIosStoreUrl.isNotEmpty
+      ? _envIosStoreUrl
+      : (dotenv.env['IOS_STORE_URL'] ?? '');
     mobileApiBaseUrl = _normalizeMobileApiBaseUrl(rawMobileApiBaseUrl);
+    inviteLandingUrl = _normalizeGenericUrl(rawInviteLandingUrl, fallback: 'https://jobfriends.app/invite');
+    androidStoreUrl = _normalizeGenericUrl(rawAndroidStoreUrl, fallback: 'https://play.google.com/store/apps/details?id=com.jobfriends.mobile');
+    iosStoreUrl = _normalizeGenericUrl(rawIosStoreUrl, fallback: 'https://apps.apple.com/app/id0000000000');
     environment = _envEnvironment.isNotEmpty
       ? _envEnvironment
       : (dotenv.env['ENVIRONMENT'] ?? 'development');
@@ -101,6 +119,25 @@ class AppConfig {
     final hasValidScheme = uri.scheme == 'http' || uri.scheme == 'https';
     if (!hasValidScheme || uri.host.isEmpty) {
       return '';
+    }
+
+    return value;
+  }
+
+  static String _normalizeGenericUrl(String rawValue, {required String fallback}) {
+    final value = rawValue.trim();
+    if (value.isEmpty) {
+      return fallback;
+    }
+
+    final uri = Uri.tryParse(value);
+    if (uri == null) {
+      return fallback;
+    }
+
+    final hasValidScheme = uri.scheme == 'http' || uri.scheme == 'https';
+    if (!hasValidScheme || uri.host.trim().isEmpty) {
+      return fallback;
     }
 
     return value;

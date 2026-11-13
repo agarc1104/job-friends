@@ -3,7 +3,6 @@ param(
     [string]$SupabaseAnonKey,
     [string]$MobileApiBaseUrl,
     [string]$AppEnv = "production",
-    [string]$AdmobAndroidBannerId,
     [string]$AdmobAndroidInterstitialId,
     [string]$AdmobAndroidRewardedInterstitialId,
     [switch]$SkipPubGet
@@ -54,9 +53,6 @@ if ($SupabaseAnonKey) {
 }
 if ($MobileApiBaseUrl) {
     $dartDefines += "--dart-define=MOBILE_API_BASE_URL=$MobileApiBaseUrl"
-}
-if ($AdmobAndroidBannerId) {
-    $dartDefines += "--dart-define=ADMOB_ANDROID_BANNER_ID=$AdmobAndroidBannerId"
 }
 if ($AdmobAndroidInterstitialId) {
     $dartDefines += "--dart-define=ADMOB_ANDROID_INTERSTITIAL_ID=$AdmobAndroidInterstitialId"

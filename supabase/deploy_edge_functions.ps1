@@ -55,7 +55,7 @@ supabase secrets list --project-ref $SUPABASE_PROJECT_REF
 
 # 5. Desplegar las 4 Edge Functions
 Write-Host "[5/5] Desplegando Edge Functions..."
-$functions = @("search-jobs", "cv-assist", "cv-generate-store", "interview-reply")
+$functions = @("search-jobs", "cv-assist", "cv-generate-store", "interview-reply", "account-delete", "password-recovery-verify")
 
 foreach ($fn in $functions) {
     Write-Host "  -> Desplegando $fn ..."

@@ -91,6 +91,15 @@ class CvGenerateStoreRequest(BaseModel):
     email: str
     output_format: str = Field(default="docx")
     profile_data: dict[str, str] = Field(default_factory=dict)
+    mode: str = Field(default="final")
+    draft_id: str = Field(default="")
+
+
+class CvGenerateDraftResponse(BaseModel):
+    draft_id: str
+    latex: str
+    output_format: str
+    source: str = Field(default="draft")
 
 
 class CvGenerateStoreResponse(BaseModel):
@@ -366,8 +375,8 @@ def cv_assist(payload: CvAssistRequest) -> CvAssistResponse:
     return CvAssistResponse(suggestion=suggestion)
 
 
-@app.post("/cv/generate-store", response_model=CvGenerateStoreResponse)
-def cv_generate_store(payload: CvGenerateStoreRequest) -> CvGenerateStoreResponse:
+@app.post("/cv/generate-store", response_model=CvGenerateStoreResponse | CvGenerateDraftResponse)
+def cv_generate_store(payload: CvGenerateStoreRequest) -> CvGenerateStoreResponse | CvGenerateDraftResponse:
     if not payload.email.strip():
         raise HTTPException(status_code=400, detail="El email es obligatorio para generar/guardar el CV.")
 
@@ -384,6 +393,8 @@ def cv_generate_store(payload: CvGenerateStoreRequest) -> CvGenerateStoreRespons
 
     normalized_email = payload.email.strip().lower()
     normalized_output = payload.output_format.lower()
+    normalized_mode = payload.mode.strip().lower() or "final"
+    normalized_draft_id = payload.draft_id.strip()
 
     try:
         # Source of truth: same Edge Function used in production, preserving Gemini output path.
@@ -394,6 +405,8 @@ def cv_generate_store(payload: CvGenerateStoreRequest) -> CvGenerateStoreRespons
                 "email": normalized_email,
                 "output_format": normalized_output,
                 "profile_data": normalized_profile,
+                "mode": normalized_mode,
+                "draft_id": normalized_draft_id,
             },
         )
     except ValueError as ex:
@@ -411,6 +424,14 @@ def cv_generate_store(payload: CvGenerateStoreRequest) -> CvGenerateStoreRespons
         raise HTTPException(status_code=500, detail=f"No se pudo generar/guardar CV: {ex}") from None
 
     _inc("cv_generate_ok")
+    if normalized_mode == "draft":
+        return CvGenerateDraftResponse(
+            draft_id=str(metadata.get("draft_id", "")),
+            latex=str(metadata.get("latex", "")),
+            output_format=str(metadata.get("output_format", payload.output_format.lower())),
+            source=str(metadata.get("source", "draft")),
+        )
+
     return CvGenerateStoreResponse(
         file_name=str(metadata.get("file_name", "")),
         output_format=str(metadata.get("output_format", payload.output_format.lower())),
@@ -673,8 +694,6 @@ def readiness() -> JSONResponse:
         missing.append("DEEPSEEK_API_KEY")
     if not settings.serpapi_api_key:
         missing.append("SERPAPI_API_KEY")
-    if not settings.admob_android_banner_id:
-        missing.append("ADMOB_ANDROID_BANNER_ID")
     if not settings.admob_android_interstitial_id:
         missing.append("ADMOB_ANDROID_INTERSTITIAL_ID")
 

@@ -12,8 +12,8 @@ class RewardedInterstitialAdsService {
   static final RewardedInterstitialAdsService instance =
       RewardedInterstitialAdsService._();
 
-  static const _cooldown = Duration(minutes: 5);
-  static const _loadTimeout = Duration(seconds: 3);
+  static const _loadTimeout = Duration(seconds: 8);
+  static const _showTimeout = Duration(seconds: 20);
 
   final _repository = const JobFriendsRepository();
 
@@ -21,7 +21,6 @@ class RewardedInterstitialAdsService {
   bool _isLoading = false;
   bool _isShowing = false;
   Future<void>? _loadingFuture;
-  DateTime? _lastShownAt;
 
   Future<void> preload() async {
     await _ensureLoaded(userEmail: null, placement: 'preload');
@@ -35,19 +34,15 @@ class RewardedInterstitialAdsService {
       return false;
     }
 
-    if (_isShowing) {
-      return false;
+    final normalizedEmail = userEmail?.trim().toLowerCase() ?? '';
+    if (normalizedEmail.isNotEmpty) {
+      final adFreeActive = await _repository.isCurrentUserAdFree();
+      if (adFreeActive) {
+        return false;
+      }
     }
 
-    final lastShownAt = _lastShownAt;
-    if (lastShownAt != null && DateTime.now().difference(lastShownAt) < _cooldown) {
-      unawaited(
-        _trackEvent(
-          userEmail: userEmail,
-          eventName: 'rewarded_interstitial_skipped_cooldown',
-          placement: placement,
-        ),
-      );
+    if (_isShowing) {
       return false;
     }
 
@@ -74,7 +69,6 @@ class RewardedInterstitialAdsService {
       onAdDismissedFullScreenContent: (dismissedAd) {
         dismissedAd.dispose();
         _isShowing = false;
-        _lastShownAt = DateTime.now();
         unawaited(_ensureLoaded(userEmail: userEmail, placement: placement));
         if (!completer.isCompleted) {
           completer.complete(true);
@@ -135,7 +129,19 @@ class RewardedInterstitialAdsService {
       }
     }
 
-    return completer.future;
+    try {
+      return await completer.future.timeout(_showTimeout);
+    } on TimeoutException {
+      _isShowing = false;
+      unawaited(
+        _trackEvent(
+          userEmail: userEmail,
+          eventName: 'rewarded_interstitial_show_timeout',
+          placement: placement,
+        ),
+      );
+      return false;
+    }
   }
 
   Future<void> _ensureLoaded({

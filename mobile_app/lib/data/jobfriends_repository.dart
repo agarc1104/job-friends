@@ -8,12 +8,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../config/app_config.dart';
 import '../models/application_record.dart';
+import '../models/cv_draft_result.dart';
 import '../models/cv_generated_result.dart';
 import '../models/interview_coach_reply.dart';
 import '../models/interview_message.dart';
 import '../models/interview_practice_mode.dart';
 import '../models/interview_session.dart';
 import '../models/job_search_result.dart';
+import '../models/referral_status.dart';
 import '../models/user_profile.dart';
 
 class JobSearchPage {
@@ -36,9 +38,11 @@ class JobFriendsRepository {
   const JobFriendsRepository();
 
   static const Duration _apiTimeout = Duration(seconds: 25);
-  static const Duration _cvGenerationTimeout = Duration(seconds: 120);
+  static const Duration _cvGenerationTimeout = Duration(seconds: 240);
   static const int _cvCapacityRetryAttempts = 2;
   static const Duration _cvCapacityRetryFallbackDelay = Duration(seconds: 5);
+  static const Duration _cvMetadataFallbackWaitTimeout = Duration(seconds: 90);
+  static const Duration _cvMetadataFallbackPollInterval = Duration(seconds: 6);
   static const String _companyInterestLeadsTable = 'company_interest_leads';
   static const String _cvBucket = 'applicant-cvs';
   static const String _cvMetadataTable = 'ApplicantCVs';
@@ -199,18 +203,24 @@ class JobFriendsRepository {
         'register profile save failed email="$normalizedEmail" '
         'code=${error.code ?? 'sin-codigo'} message=${error.message}',
       );
+      // Surface the failure: the auth account exists but is not linked to Aplicants yet.
+      throw JobFriendsRepositoryException(
+        'Tu cuenta fue creada, pero no se pudo guardar tu perfil (${error.code ?? 'sin-codigo'}). '
+        'Intenta iniciar sesion nuevamente o contacta a soporte.',
+      );
     }
     return UserProfile.fromMap(payload);
   }
 
   Future<void> _saveApplicantProfile(Map<String, String> payload) async {
     try {
+      // Param names must match the SQL function signature (_first_name, _last_name, _phone).
       await _client.rpc(
         'save_current_applicant_profile',
         params: {
-          'first_name': payload['First_Name'] ?? '',
-          'last_name': payload['Last_Name'] ?? '',
-          'phone': payload['Phone'] ?? '',
+          '_first_name': payload['First_Name'] ?? '',
+          '_last_name': payload['Last_Name'] ?? '',
+          '_phone': payload['Phone'] ?? '',
         },
       );
       return;
@@ -222,6 +232,7 @@ class JobFriendsRepository {
       _logDebug('save_current_applicant_profile rpc unexpected error=$error');
     }
 
+    // Fallback path: must succeed, otherwise the account is left without a linked profile row.
     await _client.from('Aplicants').upsert(payload, onConflict: 'Email');
   }
 
@@ -403,6 +414,46 @@ class JobFriendsRepository {
     }
   }
 
+  Future<void> registerLegalAcceptance({
+    required String documentKey,
+    required String documentVersion,
+    required DateTime acceptedAtUtc,
+    required String localeCode,
+  }) async {
+    final authUser = _client.auth.currentUser;
+    if (authUser == null) {
+      return;
+    }
+
+    final normalizedDocumentKey = documentKey.trim().toLowerCase();
+    final normalizedVersion = documentVersion.trim();
+    final normalizedLocale = localeCode.trim().toLowerCase();
+
+    if (normalizedDocumentKey.isEmpty || normalizedVersion.isEmpty) {
+      throw const JobFriendsRepositoryException(
+        'Documento legal o version invalida para registrar aceptacion.',
+      );
+    }
+
+    try {
+      await _client.from('legal_acceptances').upsert(
+        {
+          'auth_user_id': authUser.id,
+          'document_key': normalizedDocumentKey,
+          'document_version': normalizedVersion,
+          'accepted_at': acceptedAtUtc.toIso8601String(),
+          'locale_code': normalizedLocale,
+          'source': 'mobile_app',
+        },
+        onConflict: 'auth_user_id,document_key,document_version',
+      );
+    } on PostgrestException catch (error) {
+      throw JobFriendsRepositoryException(
+        'No se pudo registrar aceptacion legal (${error.code ?? 'sin-codigo'}): ${error.message}',
+      );
+    }
+  }
+
   Future<List<ApplicationRecord>> fetchApplications(String email) async {
     final normalizedEmail = email.trim().toLowerCase();
     _logDebug('fetchApplications start applicantEmail="$normalizedEmail"');
@@ -540,7 +591,14 @@ class JobFriendsRepository {
   }
 
   Future<List<CvGeneratedResult>> fetchAllApplicantCvs(String applicantEmail) async {
-    final normalizedEmail = applicantEmail.trim().toLowerCase();
+    final normalizedEmail = applicantEmail.trim().toLowerCase().isNotEmpty
+        ? applicantEmail.trim().toLowerCase()
+        : (_client.auth.currentUser?.email ?? '').trim().toLowerCase();
+
+    if (normalizedEmail.isEmpty) {
+      _logDebug('fetchAllApplicantCvs skipped because normalizedEmail is empty');
+      return [];
+    }
 
     try {
       final response = await _client
@@ -551,10 +609,54 @@ class JobFriendsRepository {
 
       final results = <CvGeneratedResult>[];
       for (final item in response) {
-        results.add(CvGeneratedResult.fromMap(item));
+        final normalizedItem = Map<String, dynamic>.from(item);
+        if ((normalizedItem['output_format']?.toString().trim().isEmpty ?? true) &&
+            (normalizedItem['file_name']?.toString().isNotEmpty ?? false)) {
+          normalizedItem['output_format'] = _cvOutputFormatByFileName(
+            normalizedItem['file_name'].toString(),
+          );
+        }
+        results.add(CvGeneratedResult.fromMap(normalizedItem));
       }
       return results;
     } on PostgrestException catch (error) {
+      final lowerMessage = error.message.toLowerCase();
+      final missingOutputFormatColumn =
+          (error.code == '42703' && lowerMessage.contains('output_format')) ||
+          (lowerMessage.contains('column') && lowerMessage.contains('output_format'));
+
+      if (missingOutputFormatColumn) {
+        _logDebug(
+          'fetchAllApplicantCvs retrying without output_format column for applicantEmail="$normalizedEmail"',
+        );
+        try {
+          final fallbackResponse = await _client
+              .from('ApplicantCVs')
+              .select('file_name, storage_path, public_url, source, updated_at')
+              .eq('applicant_email', normalizedEmail)
+              .order('updated_at', ascending: false);
+
+          final fallbackResults = <CvGeneratedResult>[];
+          for (final item in fallbackResponse) {
+            final normalizedItem = Map<String, dynamic>.from(item);
+            if ((normalizedItem['output_format']?.toString().trim().isEmpty ?? true) &&
+                (normalizedItem['file_name']?.toString().isNotEmpty ?? false)) {
+              normalizedItem['output_format'] = _cvOutputFormatByFileName(
+                normalizedItem['file_name'].toString(),
+              );
+            }
+            fallbackResults.add(CvGeneratedResult.fromMap(normalizedItem));
+          }
+          return fallbackResults;
+        } on PostgrestException catch (fallbackError) {
+          _logDebug(
+            'fetchAllApplicantCvs fallback error applicantEmail="$normalizedEmail" '
+            'code=${fallbackError.code ?? 'sin-codigo'} message=${fallbackError.message}',
+          );
+          return [];
+        }
+      }
+
       _logDebug(
         'fetchAllApplicantCvs error applicantEmail="$normalizedEmail" '
         'code=${error.code ?? 'sin-codigo'} message=${error.message}',
@@ -706,12 +808,68 @@ class JobFriendsRepository {
     return payload['suggestion']?.toString() ?? '';
   }
 
+  Future<CvDraftResult> generateCvDraft({
+    required String fullName,
+    required String email,
+    required String outputFormat,
+    required Map<String, String> profileData,
+    String? traceId,
+  }) async {
+    final locale = PlatformDispatcher.instance.locale;
+    final languageCode = _resolveSupportedLanguageCode(locale.languageCode);
+    final resolvedTraceId = (traceId ?? '').trim().isEmpty
+        ? DateTime.now().microsecondsSinceEpoch.toString()
+        : traceId!.trim();
+    final normalizedOutputFormat = outputFormat.trim().toLowerCase();
+
+    _logDebug(
+      'cv-generate-draft start traceId=$resolvedTraceId email=${email.trim().toLowerCase()} '
+      'format=$normalizedOutputFormat profileKeys=${profileData.keys.toList()}',
+    );
+
+    final normalizedProfileData = <String, String>{
+      ...profileData,
+      'cv_columns': 'una_columna',
+    };
+    final providedPhone =
+        (normalizedProfileData['phone'] ?? normalizedProfileData['Phone'] ?? '').trim();
+    if (providedPhone.isNotEmpty) {
+      normalizedProfileData['phone'] = providedPhone;
+    } else {
+      final applicantProfile = await _loadApplicantProfile(email.trim().toLowerCase());
+      final fallbackPhone = applicantProfile['Phone']?.toString().trim() ?? '';
+      if (fallbackPhone.isNotEmpty) {
+        normalizedProfileData['phone'] = fallbackPhone;
+      }
+    }
+
+    final payload = await _invokeFunction(
+      'cv-generate-store',
+      {
+        'full_name': fullName,
+        'email': email,
+        'output_format': normalizedOutputFormat,
+        'profile_data': normalizedProfileData,
+        'language_code': languageCode,
+        'locale': locale.toLanguageTag(),
+        'mode': 'draft',
+      },
+      timeout: _cvGenerationTimeout,
+    );
+
+    _logDebug(
+      'cv-generate-draft success traceId=$resolvedTraceId keys=${payload.keys.toList()}',
+    );
+    return CvDraftResult.fromMap(payload);
+  }
+
   Future<CvGeneratedResult> generateAndStoreCv({
     required String fullName,
     required String email,
     required String outputFormat,
     required Map<String, String> profileData,
     String? traceId,
+    String draftId = '',
     CvGenerationProgressCallback? onProgress,
   }) async {
     final locale = PlatformDispatcher.instance.locale;
@@ -720,6 +878,13 @@ class JobFriendsRepository {
         ? DateTime.now().microsecondsSinceEpoch.toString()
         : traceId!.trim();
     final normalizedOutputFormat = outputFormat.trim().toLowerCase();
+    final generationStartedAt = DateTime.now().toUtc();
+    final previousCvRecord = await fetchApplicantCvRecord(email);
+    final previousStoragePath = previousCvRecord?['storage_path']?.toString().trim() ?? '';
+    final previousUpdatedAt = DateTime.tryParse(
+      previousCvRecord?['updated_at']?.toString() ?? '',
+    )
+        ?.toUtc();
     _logDebug(
       'cv-generate-store start traceId=$resolvedTraceId email=${email.trim().toLowerCase()} '
       'format=$normalizedOutputFormat profileKeys=${profileData.keys.toList()}',
@@ -740,6 +905,17 @@ class JobFriendsRepository {
       ...profileData,
       'cv_columns': 'una_columna',
     };
+    final providedPhone =
+        (normalizedProfileData['phone'] ?? normalizedProfileData['Phone'] ?? '').trim();
+    if (providedPhone.isNotEmpty) {
+      normalizedProfileData['phone'] = providedPhone;
+    } else {
+      final applicantProfile = await _loadApplicantProfile(email.trim().toLowerCase());
+      final fallbackPhone = applicantProfile['Phone']?.toString().trim() ?? '';
+      if (fallbackPhone.isNotEmpty) {
+        normalizedProfileData['phone'] = fallbackPhone;
+      }
+    }
     final requestBody = {
       'full_name': fullName,
       'email': email,
@@ -747,6 +923,7 @@ class JobFriendsRepository {
       'profile_data': normalizedProfileData,
       'language_code': languageCode,
       'locale': locale.toLanguageTag(),
+      'draft_id': draftId.trim(),
     };
 
     Map<String, dynamic>? payload;
@@ -779,8 +956,13 @@ class JobFriendsRepository {
           'attempt=${attempt + 1}/${_cvCapacityRetryAttempts + 1} '
           'reason=${error.reason} retryable=${error.retryable} message=${error.message}',
         );
+        final isLatexCompileInternalError =
+            error.reason == 'internal' && error.message.toLowerCase().contains('latex');
         final canRetry =
-            error.retryable && error.reason == 'capacity' && attempt < _cvCapacityRetryAttempts;
+          ((error.retryable &&
+              (error.reason == 'capacity' || error.reason == 'timeout') &&
+              attempt < _cvCapacityRetryAttempts) ||
+            (isLatexCompileInternalError && attempt < 1));
         if (!canRetry) {
           _logDebug('cv-generate-store no-retry traceId=$resolvedTraceId');
           rethrow;
@@ -788,7 +970,10 @@ class JobFriendsRepository {
 
         lastRetryableError = error;
         final waitSeconds =
-            (error.suggestedRetrySeconds ?? _cvCapacityRetryFallbackDelay.inSeconds)
+            ((error.reason == 'timeout'
+                        ? _cvCapacityRetryFallbackDelay.inSeconds
+                        : error.suggestedRetrySeconds) ??
+                    _cvCapacityRetryFallbackDelay.inSeconds)
                 .clamp(2, 12);
         onProgress?.call(
           stage: 'retry_wait',
@@ -808,6 +993,36 @@ class JobFriendsRepository {
     }
 
     if (payload == null) {
+      final shouldPollMetadata =
+          lastRetryableError?.reason == 'timeout' || lastRetryableError?.reason == 'capacity';
+      if (shouldPollMetadata) {
+        onProgress?.call(
+          stage: 'processing_result',
+          progress: 0.9,
+          message: _cvGenerationProgressMessage(languageCode, stage: 'processing_result'),
+        );
+        final recovered = await _waitForGeneratedCvMetadata(
+          applicantEmail: email,
+          startedAt: generationStartedAt,
+          previousStoragePath: previousStoragePath,
+          previousUpdatedAt: previousUpdatedAt,
+          timeout: _cvMetadataFallbackWaitTimeout,
+          pollInterval: _cvMetadataFallbackPollInterval,
+        );
+        if (recovered != null) {
+          onProgress?.call(
+            stage: 'completed',
+            progress: 1,
+            message: _cvGenerationProgressMessage(languageCode, stage: 'completed'),
+          );
+          _logDebug(
+            'cv-generate-store recovered from metadata traceId=$resolvedTraceId '
+            'file=${recovered.fileName} storage=${recovered.storagePath}',
+          );
+          return recovered;
+        }
+      }
+
       throw lastRetryableError ??
           JobFriendsRepositoryException(
             _cvGenerationProgressMessage(languageCode, stage: 'capacity_error'),
@@ -1278,6 +1493,41 @@ class JobFriendsRepository {
     );
   }
 
+  Future<ReferralStatus> fetchReferralStatus() async {
+    final payload = await _invokeFunction('referrals', {
+      'action': 'status',
+    });
+    return ReferralStatus.fromMap(payload);
+  }
+
+  Future<String> getOrCreateReferralCode() async {
+    final payload = await _invokeFunction('referrals', {
+      'action': 'get_code',
+    });
+    return (payload['referral_code'] ?? '').toString().trim().toUpperCase();
+  }
+
+  Future<void> applyReferralCode(String code) async {
+    final normalizedCode = code.trim().toUpperCase();
+    if (normalizedCode.isEmpty) {
+      throw const JobFriendsRepositoryException('Ingresa un codigo de referido valido.');
+    }
+
+    await _invokeFunction('referrals', {
+      'action': 'apply_code',
+      'code': normalizedCode,
+    });
+  }
+
+  Future<bool> isCurrentUserAdFree() async {
+    try {
+      final status = await fetchReferralStatus();
+      return status.adFreeActive;
+    } catch (_) {
+      return false;
+    }
+  }
+
   Future<void> registerCompanyInterest({
     required String companyName,
     required String email,
@@ -1495,13 +1745,19 @@ class JobFriendsRepository {
       _logDebug('invokeFunction raw response name=$functionName type=${data.runtimeType}');
       if (data is! Map<String, dynamic>) {
         throw JobFriendsRepositoryException(
-          'Respuesta inesperada de $functionName (tipo: ${data.runtimeType}).',
+          _localizedUnexpectedFunctionResponseMessage(
+            functionName: functionName,
+            responseType: data.runtimeType.toString(),
+          ),
         );
       }
       if (data['error'] != null) {
         _logDebug('invokeFunction error payload name=$functionName error=${data['error']}');
         throw JobFriendsRepositoryException(
-          'Error en $functionName: ${data['error']}',
+          _localizedEdgePayloadErrorMessage(
+            functionName: functionName,
+            detail: data['error']?.toString() ?? '',
+          ),
         );
       }
       _logDebug('invokeFunction success name=$functionName keys=${data.keys.toList()}');
@@ -1536,15 +1792,119 @@ class JobFriendsRepository {
     } on TimeoutException {
       _logDebug('invokeFunction timeout name=$functionName timeout=${timeout.inSeconds}s');
       throw JobFriendsRepositoryException(
-        'Timeout llamando a $functionName despues de ${timeout.inSeconds}s. Intenta de nuevo.',
+        _localizedInvokeTimeoutMessage(
+          functionName: functionName,
+          timeoutSeconds: timeout.inSeconds,
+        ),
+        retryable: true,
+        reason: 'timeout',
       );
     } on JobFriendsRepositoryException {
       rethrow;
     } catch (error) {
       _logDebug('invokeFunction unexpected error name=$functionName error=$error');
       throw JobFriendsRepositoryException(
-        'Fallo inesperado en $functionName: $error',
+        _localizedUnexpectedInvokeErrorMessage(
+          functionName: functionName,
+          detail: '$error',
+        ),
       );
+    }
+  }
+
+  String _localizedInvokeTimeoutMessage({
+    required String functionName,
+    required int timeoutSeconds,
+  }) {
+    final languageCode = _resolveSupportedLanguageCode(
+      PlatformDispatcher.instance.locale.languageCode,
+    );
+    switch (languageCode) {
+      case 'en':
+        return 'Timeout calling $functionName after ${timeoutSeconds}s. Please try again.';
+      case 'pt':
+        return 'Tempo limite ao chamar $functionName apos ${timeoutSeconds}s. Tente novamente.';
+      case 'fr':
+        return 'Delai d attente depasse pour $functionName apres ${timeoutSeconds}s. Reessayez.';
+      case 'de':
+        return 'Zeituberschreitung beim Aufruf von $functionName nach ${timeoutSeconds}s. Bitte erneut versuchen.';
+      case 'it':
+        return 'Timeout chiamando $functionName dopo ${timeoutSeconds}s. Riprova.';
+      case 'es':
+      default:
+        return 'Timeout llamando a $functionName despues de ${timeoutSeconds}s. Intenta de nuevo.';
+    }
+  }
+
+  String _localizedUnexpectedFunctionResponseMessage({
+    required String functionName,
+    required String responseType,
+  }) {
+    final languageCode = _resolveSupportedLanguageCode(
+      PlatformDispatcher.instance.locale.languageCode,
+    );
+    switch (languageCode) {
+      case 'en':
+        return 'Unexpected response from $functionName (type: $responseType).';
+      case 'pt':
+        return 'Resposta inesperada de $functionName (tipo: $responseType).';
+      case 'fr':
+        return 'Reponse inattendue de $functionName (type : $responseType).';
+      case 'de':
+        return 'Unerwartete Antwort von $functionName (Typ: $responseType).';
+      case 'it':
+        return 'Risposta inattesa da $functionName (tipo: $responseType).';
+      case 'es':
+      default:
+        return 'Respuesta inesperada de $functionName (tipo: $responseType).';
+    }
+  }
+
+  String _localizedEdgePayloadErrorMessage({
+    required String functionName,
+    required String detail,
+  }) {
+    final languageCode = _resolveSupportedLanguageCode(
+      PlatformDispatcher.instance.locale.languageCode,
+    );
+    switch (languageCode) {
+      case 'en':
+        return 'The service $functionName returned an error. Please try again.';
+      case 'pt':
+        return 'O servico $functionName retornou um erro. Tente novamente.';
+      case 'fr':
+        return 'Le service $functionName a retourne une erreur. Reessayez.';
+      case 'de':
+        return 'Der Dienst $functionName hat einen Fehler zuruckgegeben. Bitte erneut versuchen.';
+      case 'it':
+        return 'Il servizio $functionName ha restituito un errore. Riprova.';
+      case 'es':
+      default:
+        return 'El servicio $functionName devolvio un error. Intenta de nuevo.';
+    }
+  }
+
+  String _localizedUnexpectedInvokeErrorMessage({
+    required String functionName,
+    required String detail,
+  }) {
+    final languageCode = _resolveSupportedLanguageCode(
+      PlatformDispatcher.instance.locale.languageCode,
+    );
+    switch (languageCode) {
+      case 'en':
+        return 'Unexpected failure in $functionName: $detail';
+      case 'pt':
+        return 'Falha inesperada em $functionName: $detail';
+      case 'fr':
+        return 'Echec inattendu dans $functionName : $detail';
+      case 'de':
+        return 'Unerwarteter Fehler in $functionName: $detail';
+      case 'it':
+        return 'Errore imprevisto in $functionName: $detail';
+      case 'es':
+      default:
+        return 'Fallo inesperado en $functionName: $detail';
     }
   }
 
@@ -1657,12 +2017,79 @@ class JobFriendsRepository {
     required String? reason,
     required int? suggestedRetrySeconds,
   }) {
+    final languageCode = _resolveSupportedLanguageCode(
+      PlatformDispatcher.instance.locale.languageCode,
+    );
     if (retryable && reason == 'capacity') {
       final seconds = (suggestedRetrySeconds ?? 20).clamp(3, 90);
-      return 'Alta demanda temporal del servicio de IA. Intenta nuevamente en ${seconds}s.';
+      switch (languageCode) {
+        case 'en':
+          return 'Temporary high demand on the AI service. Please retry in ${seconds}s.';
+        case 'pt':
+          return 'Alta demanda temporaria no servico de IA. Tente novamente em ${seconds}s.';
+        case 'fr':
+          return 'Forte demande temporaire sur le service IA. Reessayez dans ${seconds}s.';
+        case 'de':
+          return 'Vorubergehend hohe Auslastung des KI-Dienstes. Bitte in ${seconds}s erneut versuchen.';
+        case 'it':
+          return 'Domanda temporaneamente elevata del servizio IA. Riprova tra ${seconds}s.';
+        case 'es':
+        default:
+          return 'Alta demanda temporal del servicio de IA. Intenta nuevamente en ${seconds}s.';
+      }
     }
 
-    return 'Edge Function $functionName fallo (${status ?? 'sin-status'}): $detail';
+    switch (languageCode) {
+      case 'en':
+        return 'The service $functionName failed (${status ?? 'no-status'}). Please try again.';
+      case 'pt':
+        return 'O servico $functionName falhou (${status ?? 'sem-status'}). Tente novamente.';
+      case 'fr':
+        return 'Le service $functionName a echoue (${status ?? 'sans-statut'}). Reessayez.';
+      case 'de':
+        return 'Der Dienst $functionName ist fehlgeschlagen (${status ?? 'ohne-status'}). Bitte erneut versuchen.';
+      case 'it':
+        return 'Il servizio $functionName non e riuscito (${status ?? 'senza-stato'}). Riprova.';
+      case 'es':
+      default:
+        return 'El servicio $functionName fallo (${status ?? 'sin-status'}). Intenta de nuevo.';
+    }
+  }
+
+  Future<CvGeneratedResult?> _waitForGeneratedCvMetadata({
+    required String applicantEmail,
+    required DateTime startedAt,
+    required String previousStoragePath,
+    required DateTime? previousUpdatedAt,
+    required Duration timeout,
+    required Duration pollInterval,
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    final normalizedEmail = applicantEmail.trim().toLowerCase();
+
+    while (DateTime.now().isBefore(deadline)) {
+      final record = await fetchApplicantCvRecord(normalizedEmail);
+      final hasRequiredFields =
+          (record?['file_name']?.toString().trim().isNotEmpty ?? false) &&
+          (record?['public_url']?.toString().trim().isNotEmpty ?? false);
+
+      if (record != null && hasRequiredFields) {
+        final storagePath = record['storage_path']?.toString().trim() ?? '';
+        final updatedAt = DateTime.tryParse(record['updated_at']?.toString() ?? '')?.toUtc();
+        final hasDifferentStorage =
+            previousStoragePath.isEmpty || (storagePath.isNotEmpty && storagePath != previousStoragePath);
+        final hasNewerTimestamp = updatedAt != null &&
+            updatedAt.isAfter(previousUpdatedAt ?? startedAt.subtract(const Duration(seconds: 1)));
+
+        if (hasDifferentStorage || hasNewerTimestamp) {
+          return CvGeneratedResult.fromMap(record);
+        }
+      }
+
+      await Future<void>.delayed(pollInterval);
+    }
+
+    return null;
   }
 
   bool _canFallbackManualApplication(String message) {

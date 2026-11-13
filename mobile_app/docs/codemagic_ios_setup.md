@@ -23,7 +23,6 @@ Crea un Environment Group en Codemagic llamado `jobfriends_mobile_secrets` y def
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 - `MOBILE_API_BASE_URL`
-- `ADMOB_IOS_BANNER_ID` (opcional)
 - `ADMOB_IOS_INTERSTITIAL_ID` (opcional)
 
 Notas:

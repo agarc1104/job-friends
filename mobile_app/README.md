@@ -30,8 +30,6 @@ Pasa estas variables con `--dart-define` o inyectalas desde tu CI:
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 - `MOBILE_API_BASE_URL` (Android emulador: `http://10.0.2.2:8000`)
-- `ADMOB_ANDROID_BANNER_ID`
-- `ADMOB_IOS_BANNER_ID`
 - `ADMOB_ANDROID_INTERSTITIAL_ID`
 - `ADMOB_IOS_INTERSTITIAL_ID`
 
@@ -98,7 +96,6 @@ Si `flutter` no está en tu PATH, usa el script incluido:
 	-SupabaseUrl "https://<tu-proyecto>.supabase.co" \
 	-SupabaseAnonKey "<tu-anon-key>" \
 	-MobileApiBaseUrl "https://<tu-api-produccion>" \
-	-AdmobAndroidBannerId "ca-app-pub-xxxx/yyyy" \
 	-AdmobAndroidInterstitialId "ca-app-pub-xxxx/zzzz"
 ```
 

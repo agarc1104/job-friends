@@ -1,0 +1,5 @@
+"NSCameraUsageDescription" = "JobFriends usa la fotocamera per scattare e allegare foto al tuo profilo o ai documenti di candidatura quando lo richiedi.";
+"NSLocationAlwaysAndWhenInUseUsageDescription" = "JobFriends usa la tua posizione per dare priorita alle offerte vicine quando attivi le funzioni di ricerca basate sulla posizione.";
+"NSLocationWhenInUseUsageDescription" = "JobFriends usa la tua posizione per dare priorita alle offerte vicine quando attivi la ricerca automatica.";
+"NSPhotoLibraryUsageDescription" = "JobFriends accede alla tua libreria foto per permetterti di selezionare e allegare immagini al tuo profilo o alle candidature.";
+"NSUserTrackingUsageDescription" = "JobFriends usa gli identificativi del dispositivo per misurare gli annunci e sostenere le funzioni di IA senza appesantire la tua esperienza.";

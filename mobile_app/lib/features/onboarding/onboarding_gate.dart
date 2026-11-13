@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../legal/terms_acceptance_prefs.dart';
+import '../legal/terms_and_conditions_screen.dart';
 import '../shell/home_shell.dart';
 import 'onboarding_prefs.dart';
 import 'onboarding_screen.dart';
@@ -14,6 +16,7 @@ class OnboardingGate extends StatefulWidget {
 class _OnboardingGateState extends State<OnboardingGate> {
   bool _isLoading = true;
   bool _isCompleted = false;
+  bool _hasAcceptedTerms = false;
 
   @override
   void initState() {
@@ -22,6 +25,7 @@ class _OnboardingGateState extends State<OnboardingGate> {
   }
 
   Future<void> _loadOnboardingState() async {
+    final hasAcceptedTerms = await TermsAcceptancePrefs.isAcceptedCurrentPolicies();
     final completed = await OnboardingPrefs.isCompleted();
 
     if (!mounted) {
@@ -29,8 +33,21 @@ class _OnboardingGateState extends State<OnboardingGate> {
     }
 
     setState(() {
+      _hasAcceptedTerms = hasAcceptedTerms;
       _isCompleted = completed;
       _isLoading = false;
+    });
+  }
+
+  Future<void> _acceptTerms() async {
+    await TermsAcceptancePrefs.markAcceptedCurrentPolicies();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _hasAcceptedTerms = true;
     });
   }
 
@@ -51,6 +68,13 @@ class _OnboardingGateState extends State<OnboardingGate> {
     if (_isLoading) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (!_hasAcceptedTerms) {
+      return TermsAndConditionsScreen(
+        requireAcceptance: true,
+        onAccepted: _acceptTerms,
       );
     }
 

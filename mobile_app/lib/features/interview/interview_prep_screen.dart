@@ -181,7 +181,9 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
     await _loadData();
   }
 
-  Future<void> _showNewChatSheet() async {
+  Future<void> _showNewChatSheet({
+    InterviewPracticeMode initialMode = InterviewPracticeMode.simulation,
+  }) async {
     if (_applications.isEmpty) {
       if (!mounted) {
         return;
@@ -197,7 +199,7 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
       isScrollControlled: true,
       builder: (sheetContext) {
         ApplicationRecord selectedApplication = _applications.first;
-        InterviewPracticeMode selectedMode = InterviewPracticeMode.simulation;
+        InterviewPracticeMode selectedMode = initialMode;
 
         return StatefulBuilder(
           builder: (context, setSheetState) {
@@ -213,15 +215,15 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Nuevo chat de entrevista',
+                    tr(context, 'interview.newChat'),
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                   const SizedBox(height: AppSpacing.md),
                   DropdownButtonFormField<ApplicationRecord>(
                     initialValue: selectedApplication,
                     isExpanded: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Vacante',
+                    decoration: InputDecoration(
+                      labelText: tr(context, 'interview.jobLabel'),
                       prefixIcon: Icon(Icons.work_outline_rounded),
                     ),
                     items: _applications
@@ -242,8 +244,8 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
                   const SizedBox(height: AppSpacing.sm),
                   DropdownButtonFormField<InterviewPracticeMode>(
                     initialValue: selectedMode,
-                    decoration: const InputDecoration(
-                      labelText: 'Modo de practica',
+                    decoration: InputDecoration(
+                      labelText: tr(context, 'interview.practiceMode'),
                       prefixIcon: Icon(Icons.tune_rounded),
                     ),
                     items: InterviewPracticeMode.values
@@ -278,7 +280,7 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
                         );
                       },
                       icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text('Iniciar chat'),
+                      label: Text(tr(context, 'interview.startChat')),
                     ),
                   ),
                 ],
@@ -401,7 +403,7 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
               ),
               const SizedBox(height: AppSpacing.xs),
               Text(
-                'Prueba con otra vacante, modo o estado.',
+                tr(context, 'interview.tryAnotherFilter'),
                 style: Theme.of(context)
                     .textTheme
                     .bodySmall
@@ -597,12 +599,109 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
                     });
                   },
                   icon: const Icon(Icons.refresh_rounded),
-                  label: const Text('Limpiar filtros'),
+                  label: Text(tr(context, 'interview.clearFilters')),
                 ),
               ],
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildModeCard({
+    required String title,
+    required String description,
+    required String duration,
+    required IconData icon,
+    required InterviewPracticeMode mode,
+    required List<Color> colors,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadii.md),
+        border: Border.all(color: AppColors.softSurfaceBorder),
+        boxShadow: AppShadows.card,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(colors: colors),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Icon(icon, color: Colors.white),
+              ),
+              const SizedBox(width: AppSpacing.xs),
+              Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium)),
+              Text(duration, style: Theme.of(context).textTheme.labelSmall),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(description, style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.secondaryText)),
+          const SizedBox(height: AppSpacing.sm),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _isOpeningChat ? null : () => _showNewChatSheet(initialMode: mode),
+              icon: const Icon(Icons.play_arrow_rounded),
+              label: Text(tr(context, 'interview.startChat')),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecentPerformance(BuildContext context) {
+    final activeSessions = _sessions.where((session) => session.status == 'active').length;
+    final completedSessions = _sessions.length - activeSessions;
+    final latestSession = _sessions.isEmpty
+        ? null
+        : (_sessions.toList()..sort((a, b) => b.updatedAt.compareTo(a.updatedAt))).first;
+
+    return Container(
+      padding: const EdgeInsets.all(AppSpacing.md),
+      decoration: BoxDecoration(
+        color: AppColors.softBlue,
+        borderRadius: BorderRadius.circular(AppRadii.md),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(tr(context, 'interview.performance'), style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: [
+              _PerformanceMetric(label: tr(context, 'interview.metric.sessions'), value: '${_sessions.length}'),
+              _PerformanceMetric(label: tr(context, 'interview.metric.active'), value: '$activeSessions'),
+              _PerformanceMetric(
+                label: tr(context, 'interview.metric.completed'),
+                value: '$completedSessions',
+              ),
+            ],
+          ),
+          if (latestSession != null) ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              'Última práctica · ${_formatDate(latestSession.updatedAt)}',
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
+          ] else ...[
+            const SizedBox(height: AppSpacing.xs),
+            Text(
+              tr(context, 'interview.performance.empty'),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.secondaryText),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -617,36 +716,42 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
             child: SingleChildScrollView(
               child: Column(
                 children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(AppSpacing.md),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              tr(context, 'app.interviewAi'),
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                          ),
-                          SizedBox(
-                            width: 148,
-                            child: FilledButton.icon(
-                              onPressed: _isOpeningChat ? null : _showNewChatSheet,
-                              icon: _isOpeningChat
-                                  ? const SizedBox(
-                                      width: 14,
-                                      height: 14,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white,
-                                      ),
-                                    )
-                                  : const Icon(Icons.add_comment_rounded),
-                              label: const Text('Nuevo chat'),
-                            ),
-                          ),
-                        ],
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(AppSpacing.md),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [AppColors.navy, Color(0xFF164E63)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
                       ),
+                      borderRadius: BorderRadius.circular(AppRadii.md),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.graphic_eq_rounded, color: AppColors.cyan, size: 28),
+                        const SizedBox(height: AppSpacing.xs),
+                        Text(
+                          tr(context, 'interview.hub.title'),
+                          style: Theme.of(context).textTheme.titleLarge?.copyWith(color: Colors.white),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          tr(context, 'interview.hub.subtitle'),
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white70),
+                        ),
+                        const SizedBox(height: AppSpacing.xs),
+                        OutlinedButton.icon(
+                          onPressed: _isOpeningChat ? null : () => _showNewChatSheet(),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.white,
+                            side: const BorderSide(color: Colors.white54),
+                          ),
+                          icon: const Icon(Icons.add_comment_rounded),
+                          label: Text(tr(context, 'interview.newChatShort')),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: AppSpacing.md),
@@ -655,6 +760,26 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
                   else
                     Column(
                       children: [
+                        _buildModeCard(
+                          title: tr(context, 'interview.mode.express'),
+                          description: tr(context, 'interview.mode.express.description'),
+                          duration: '5 min',
+                          icon: Icons.bolt_rounded,
+                          mode: InterviewPracticeMode.simulation,
+                          colors: const [AppColors.primary, AppColors.cyan],
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        _buildModeCard(
+                          title: tr(context, 'interview.mode.technical'),
+                          description: tr(context, 'interview.mode.technical.description'),
+                          duration: '15 min',
+                          icon: Icons.code_rounded,
+                          mode: InterviewPracticeMode.technical,
+                          colors: const [AppColors.navy, AppColors.blue],
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        _buildRecentPerformance(context),
+                        const SizedBox(height: AppSpacing.md),
                         _buildFilters(context),
                         const SizedBox(height: AppSpacing.md),
                         _buildHistoryList(context),
@@ -665,6 +790,27 @@ class _InterviewPrepScreenState extends State<InterviewPrepScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _PerformanceMetric extends StatelessWidget {
+  const _PerformanceMetric({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 3),
+          Text(label, style: Theme.of(context).textTheme.labelSmall),
+        ],
       ),
     );
   }

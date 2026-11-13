@@ -30,8 +30,6 @@ class Settings:
     mobile_api_port: str
     admob_android_app_id: str
     admob_ios_app_id: str
-    admob_android_banner_id: str
-    admob_ios_banner_id: str
     admob_android_interstitial_id: str
     admob_ios_interstitial_id: str
 
@@ -54,8 +52,6 @@ settings = Settings(
     mobile_api_port=os.getenv("MOBILE_API_PORT", "8000"),
     admob_android_app_id=os.getenv("ADMOB_ANDROID_APP_ID", ""),
     admob_ios_app_id=os.getenv("ADMOB_IOS_APP_ID", ""),
-    admob_android_banner_id=os.getenv("ADMOB_ANDROID_BANNER_ID", ""),
-    admob_ios_banner_id=os.getenv("ADMOB_IOS_BANNER_ID", ""),
     admob_android_interstitial_id=os.getenv("ADMOB_ANDROID_INTERSTITIAL_ID", ""),
     admob_ios_interstitial_id=os.getenv("ADMOB_IOS_INTERSTITIAL_ID", ""),
 )

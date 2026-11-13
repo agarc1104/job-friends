@@ -22,16 +22,35 @@
 	<string>$(FLUTTER_BUILD_NAME)</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.jobfriends.mobile.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>jobfriends</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<string>9</string>
 	<key>GADApplicationIdentifier</key>
 	<string>ca-app-pub-6063446543539696~4857771703</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSUserTrackingUsageDescription</key>
-	<string>JobFriends usa identificadores del dispositivo para medir anuncios y sostener las funciones de IA sin saturar la experiencia.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>JobFriends uses the camera to take and attach photos to your profile or application documents when you request it.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>JobFriends uses your location to prioritize nearby jobs when you enable location-based search features.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>JobFriends usa tu ubicacion para priorizar vacantes cercanas cuando activas la busqueda automatica.</string>
+	<string>JobFriends uses your location to prioritize nearby jobs when you enable automatic search.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>JobFriends accesses your photo library so you can select and attach images to your profile or applications.</string>
+	<key>NSUserTrackingUsageDescription</key>
+	<string>JobFriends uses device identifiers to measure ads and support AI features without overwhelming your experience.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -61,16 +80,16 @@
 	<string>Main</string>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
-		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>UIInterfaceOrientationPortrait</string>
 	</array>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
 	</array>
 </dict>
 </plist>

@@ -1,9 +1,16 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../data/jobfriends_repository.dart';
+import '../ads/rewarded_interstitial_ads_service.dart';
 import '../../l10n/localized_text.dart';
 import '../../models/application_record.dart';
+import '../../models/cv_generated_result.dart';
+import '../../models/job_search_result.dart';
 import '../../models/user_profile.dart';
 import '../../theme/design_system.dart';
 
@@ -11,11 +18,13 @@ class ApplicationsScreen extends StatefulWidget {
   const ApplicationsScreen({
     required this.currentUser,
     required this.onApplicationsChanged,
+    this.onExploreJobs,
     super.key,
   });
 
   final UserProfile? currentUser;
   final VoidCallback onApplicationsChanged;
+  final VoidCallback? onExploreJobs;
 
   @override
   State<ApplicationsScreen> createState() => _ApplicationsScreenState();
@@ -23,8 +32,10 @@ class ApplicationsScreen extends StatefulWidget {
 
 class _ApplicationsScreenState extends State<ApplicationsScreen> {
   final _repository = const JobFriendsRepository();
+  final _rewardedInterstitialAds = RewardedInterstitialAdsService.instance;
   late Future<List<ApplicationRecord>> _future;
   final Map<String, bool> _isUpdatingStatusById = {};
+  bool _isBoardView = false;
 
   static const List<String> _applicationStatuses = [
     'Aplicado',
@@ -41,6 +52,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
   @override
   void initState() {
     super.initState();
+    unawaited(_rewardedInterstitialAds.preload());
     _future = _loadApplications();
   }
 
@@ -67,7 +79,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       return;
     }
 
-    final added = await showDialog<bool>(
+    final submission = await showDialog<_ManualApplicationSubmission>(
       context: context,
       builder: (_) => _AddManualJobDialog(
         user: user,
@@ -75,7 +87,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       ),
     );
 
-    if (added == true && mounted) {
+    if (submission != null && mounted) {
       setState(() {
         _future = _loadApplications();
       });
@@ -83,7 +95,728 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(tr(context, 'applications.jobAdded'))),
       );
+
+      await _runManualApplyFlow(
+        user: user,
+        applicationUrl: submission.applicationUrl,
+      );
     }
+  }
+
+  Future<void> _runManualApplyFlow({
+    required UserProfile user,
+    required String applicationUrl,
+  }) async {
+    final manualJob = await _buildManualJobSearchResult(applicationUrl);
+
+    if (!mounted) {
+      return;
+    }
+
+    await _promptCvGenerationSuggestion(
+      user: user,
+      job: manualJob,
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    await _openApplyWebViewForManualJob(manualJob);
+  }
+
+  Future<JobSearchResult> _buildManualJobSearchResult(String rawUrl) async {
+    final normalizedUrl = rawUrl.trim();
+    final languageCode = languageCodeFromLocale(PlatformDispatcher.instance.locale);
+    final allApplications = await _repository.fetchApplications(widget.currentUser!.email);
+
+    ApplicationRecord? bestMatch;
+    for (final item in allApplications) {
+      if (item.applicationLink.trim() != normalizedUrl) {
+        continue;
+      }
+      if (bestMatch == null) {
+        bestMatch = item;
+        continue;
+      }
+      final currentDate = item.createdAt;
+      final bestDate = bestMatch.createdAt;
+      if (currentDate != null && (bestDate == null || currentDate.isAfter(bestDate))) {
+        bestMatch = item;
+      }
+    }
+
+    if (bestMatch != null) {
+      return JobSearchResult(
+        title: bestMatch.vacancy.trim().isEmpty ? trByCode(languageCode, 'fallback.vacancyTitle') : bestMatch.vacancy.trim(),
+        company: bestMatch.website.trim().isEmpty ? trByCode(languageCode, 'fallback.company') : bestMatch.website.trim(),
+        location: trByCode(languageCode, 'fallback.location'),
+        summary: _cleanDescription(bestMatch.description),
+        applyLink: normalizedUrl,
+      );
+    }
+
+    final uri = Uri.tryParse(normalizedUrl);
+    final fallbackCompany = uri?.host.trim().isNotEmpty == true
+        ? uri!.host.replaceFirst(RegExp(r'^www\\.'), '')
+        : trByCode(languageCode, 'fallback.company');
+
+    return JobSearchResult(
+      title: trByCode(languageCode, 'fallback.vacancyTitle'),
+      company: fallbackCompany,
+      location: trByCode(languageCode, 'fallback.location'),
+      summary: trByCode(languageCode, 'fallback.manualApplication'),
+      applyLink: normalizedUrl,
+    );
+  }
+
+  Future<void> _promptCvGenerationSuggestion({
+    required UserProfile user,
+    required JobSearchResult job,
+  }) async {
+    final cvRecord = await _repository.fetchApplicantCvRecord(user.email);
+
+    if (!mounted) {
+      return;
+    }
+
+    final hasSavedCv = cvRecord != null;
+    final title = hasSavedCv
+        ? tr(context, 'jobs.prepareCvForVacancy')
+        : tr(context, 'jobs.createCvForVacancy');
+    final description = hasSavedCv
+        ? tr(context, 'jobs.detectedSavedCv')
+        : tr(context, 'jobs.noSavedCvForRole', args: {'title': job.title, 'company': job.company});
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Text(description),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(tr(context, 'jobs.notNow')),
+          ),
+          if (hasSavedCv)
+            OutlinedButton(
+              onPressed: () => Navigator.of(dialogContext).pop('adapt_existing_form'),
+              child: Text(tr(context, 'jobs.adaptCvFromForm')),
+            ),
+          if (hasSavedCv)
+            OutlinedButton(
+              onPressed: () => Navigator.of(dialogContext).pop('new_from_form'),
+              child: Text(tr(context, 'jobs.newCvFromForm')),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(
+              hasSavedCv ? 'adapt_existing_form' : 'new_from_form',
+            ),
+            child: Text(hasSavedCv ? tr(context, 'jobs.reviewAndAdapt') : tr(context, 'jobs.createCvFromForm')),
+          ),
+        ],
+      ),
+    );
+
+    if (action == null) {
+      return;
+    }
+
+    final formData = await _showCvFormForJob(
+      job: job,
+      existingCvRecord: cvRecord,
+    );
+    if (formData == null) {
+      return;
+    }
+
+    final generationMode = action == 'adapt_existing_form' ? 'adapt_existing' : 'new_from_form';
+
+    await _generateCvForJob(
+      user: user,
+      job: job,
+      existingCvRecord: cvRecord,
+      generationMode: generationMode,
+      formData: formData,
+      generationOptions: _JobCvGenerationOptions(
+        outputFormat: formData.outputFormat,
+        colorPalette: formData.colorPalette,
+        fontSize: formData.fontSize,
+        columns: formData.columns,
+      ),
+    );
+  }
+
+  Future<void> _generateCvForJob({
+    required UserProfile user,
+    required JobSearchResult job,
+    required Map<String, dynamic>? existingCvRecord,
+    required String generationMode,
+    required _JobCvGenerationOptions generationOptions,
+    _JobCvFormData? formData,
+  }) async {
+    final progressNotifier = ValueNotifier<_CvGenerationProgressState>(
+      _CvGenerationProgressState(
+        stage: 'initial',
+        value: 0.1,
+        message: _cvGenerationWarmupMessage(),
+      ),
+    );
+    var progressDisposed = false;
+
+    final profileData = _buildCvProfileDataForJob(
+      job: job,
+      existingCvRecord: existingCvRecord,
+      generationMode: generationMode,
+      formData: formData,
+      generationOptions: generationOptions,
+      userPhone: user.phone,
+    );
+
+    try {
+      await _rewardedInterstitialAds.maybeShow(
+        placement: 'cv_before_generation',
+        userEmail: user.email,
+      );
+
+      await _showCvGenerationDialog(
+        generationFuture: _repository.generateAndStoreCv(
+          fullName: user.fullName,
+          email: user.email,
+          outputFormat: generationOptions.outputFormat,
+          profileData: profileData,
+          onProgress: ({required stage, required progress, required message}) {
+            if (progressDisposed) {
+              return;
+            }
+            final clamped = progress.clamp(0.0, 1.0).toDouble();
+            progressNotifier.value = _CvGenerationProgressState(
+              stage: stage,
+              value: clamped,
+              message: message,
+            );
+          },
+        ),
+        progress: progressNotifier,
+        job: job,
+        generationMode: generationMode,
+        selectedOutputFormat: generationOptions.outputFormat,
+      );
+    } finally {
+      progressDisposed = true;
+      progressNotifier.dispose();
+    }
+  }
+
+  Future<void> _showCvGenerationDialog({
+    required Future<CvGeneratedResult> generationFuture,
+    required ValueListenable<_CvGenerationProgressState> progress,
+    required JobSearchResult job,
+    required String generationMode,
+    required String selectedOutputFormat,
+  }) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final isAdaptingExistingCv = generationMode == 'adapt_existing';
+        return PopScope(
+          canPop: false,
+          child: FutureBuilder<CvGeneratedResult>(
+            future: generationFuture,
+            builder: (context, snapshot) {
+              final outputFormatLabel = selectedOutputFormat.toUpperCase();
+              if (snapshot.connectionState != ConnectionState.done) {
+                return AlertDialog(
+                  title: Text(isAdaptingExistingCv ? tr(context, 'jobs.adaptingCv') : tr(context, 'jobs.generatingCv')),
+                  content: ValueListenableBuilder<_CvGenerationProgressState>(
+                    valueListenable: progress,
+                    builder: (context, progressState, _) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        LinearProgressIndicator(value: progressState.value),
+                        const SizedBox(height: 12),
+                        Text(
+                          isAdaptingExistingCv
+                              ? tr(context, 'jobs.adaptingCvForRole', args: {'title': job.title, 'format': outputFormatLabel})
+                              : tr(context, 'jobs.generatingCvForRole', args: {'title': job.title, 'format': outputFormatLabel}),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 280),
+                              switchInCurve: Curves.easeOut,
+                              switchOutCurve: Curves.easeIn,
+                              transitionBuilder: (child, animation) {
+                                return FadeTransition(
+                                  opacity: animation,
+                                  child: ScaleTransition(
+                                    scale: Tween<double>(begin: 0.9, end: 1.0).animate(animation),
+                                    child: child,
+                                  ),
+                                );
+                              },
+                              child: Icon(
+                                _iconForCvGenerationStage(progressState.stage),
+                                key: ValueKey(progressState.stage),
+                                size: 16,
+                                color: AppColors.primaryActive,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                progressState.message,
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppColors.secondaryText,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
+              if (snapshot.hasError) {
+                final error = snapshot.error;
+                final message = error is JobFriendsRepositoryException
+                    ? localizedError(context, error.message)
+                    : tr(context, 'jobs.couldNotGenerateCvForRole');
+                return AlertDialog(
+                  title: Text(tr(context, 'jobs.couldNotGenerateCv')),
+                  content: Text(message),
+                  actions: [
+                    FilledButton(
+                      onPressed: () => Navigator.of(dialogContext).pop(),
+                      child: Text(tr(context, 'jobs.continueToVacancy')),
+                    ),
+                  ],
+                );
+              }
+
+              final generated = snapshot.data!;
+              return AlertDialog(
+                title: Text(isAdaptingExistingCv ? tr(context, 'jobs.cvAdapted') : tr(context, 'jobs.cvGenerated')),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      tr(context, 'jobs.cvReadyForRole', args: {'title': job.title, 'format': outputFormatLabel}),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      generated.fileName,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                  ],
+                ),
+                actions: [
+                  OutlinedButton.icon(
+                    onPressed: () => _openGeneratedCvUrl(generated),
+                    icon: const Icon(Icons.download_rounded),
+                    label: Text(tr(context, 'jobs.downloadCv')),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: Text(tr(context, 'jobs.continueToVacancy')),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  IconData _iconForCvGenerationStage(String stage) {
+    switch (stage) {
+      case 'preparing_request':
+      case 'initial':
+        return Icons.rocket_launch_rounded;
+      case 'invoking_generation':
+        return Icons.auto_awesome_rounded;
+      case 'retry_wait':
+        return Icons.hourglass_top_rounded;
+      case 'processing_result':
+        return Icons.description_rounded;
+      case 'completed':
+        return Icons.verified_rounded;
+      default:
+        return Icons.tune_rounded;
+    }
+  }
+
+  String _cvGenerationWarmupMessage() {
+    final languageCode = Localizations.localeOf(context).languageCode.toLowerCase();
+    switch (languageCode) {
+      case 'es':
+        return 'Calentando motores: organizando la vacante y tu perfil...';
+      case 'pt':
+        return 'Aquecendo os motores: organizando a vaga e o seu perfil...';
+      case 'fr':
+        return 'Mise en route: organisation de l\'offre et de votre profil...';
+      case 'de':
+        return 'Motoren laufen an: Stelle und Ihr Profil werden vorbereitet...';
+      case 'it':
+        return 'Scaldiamo i motori: stiamo organizzando la posizione e il tuo profilo...';
+      case 'en':
+      default:
+        return 'Warming up: organizing the vacancy and your profile...';
+    }
+  }
+
+  Future<void> _openGeneratedCvUrl(CvGeneratedResult generated) async {
+    final uri = Uri.tryParse(generated.publicUrl);
+    if (uri == null) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr(context, 'jobs.invalidGeneratedCvUrl'))),
+      );
+      return;
+    }
+
+    final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!opened && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr(context, 'jobs.couldNotOpenGeneratedCv'))),
+      );
+    }
+  }
+
+  Map<String, String> _buildCvProfileDataForJob({
+    required JobSearchResult job,
+    required Map<String, dynamic>? existingCvRecord,
+    required String generationMode,
+    required _JobCvGenerationOptions generationOptions,
+    required String userPhone,
+    _JobCvFormData? formData,
+  }) {
+    final rawExistingProfileData = existingCvRecord?['profile_data'];
+    final existingProfileData = <String, String>{};
+
+    if (rawExistingProfileData is Map) {
+      for (final entry in rawExistingProfileData.entries) {
+        final key = entry.key?.toString().trim() ?? '';
+        if (key.isEmpty) {
+          continue;
+        }
+        existingProfileData[key] = entry.value?.toString() ?? '';
+      }
+    }
+
+    final profileData = <String, String>{};
+
+    if (formData != null) {
+      profileData.addAll({
+        'target_roles': formData.targetRoles,
+        'summary': formData.summary,
+        'experience': formData.experience,
+        'education': formData.education,
+        'skills': formData.skills,
+        'languages': formData.languages,
+        'certifications': formData.certifications,
+        'achievements': formData.achievements,
+        'cv_color_palette': formData.colorPalette,
+        'cv_font_size': formData.fontSize,
+        'cv_columns': formData.columns,
+        'cv_include_photo': 'sin_foto',
+      });
+
+      for (final entry in existingProfileData.entries) {
+        if (!profileData.containsKey(entry.key) || profileData[entry.key]!.trim().isEmpty) {
+          profileData[entry.key] = entry.value;
+        }
+      }
+    } else if (generationMode == 'adapt_existing') {
+      profileData.addAll(existingProfileData);
+    }
+
+    final vacancyContext = '${job.title} en ${job.company} (${job.location})';
+    final previousTargetRoles = (profileData['target_roles'] ?? '').trim();
+    profileData['target_roles'] = previousTargetRoles.isEmpty
+        ? vacancyContext
+        : '$previousTargetRoles | $vacancyContext';
+
+    profileData['summary'] = (profileData['summary'] ?? '').trim();
+
+    profileData['experience'] = profileData['experience'] ?? '';
+    profileData['education'] = profileData['education'] ?? '';
+    profileData['skills'] = profileData['skills'] ?? '';
+    profileData['languages'] = profileData['languages'] ?? '';
+    profileData['certifications'] = profileData['certifications'] ?? '';
+    profileData['achievements'] = profileData['achievements'] ?? '';
+    profileData['cv_color_palette'] = generationOptions.colorPalette;
+    profileData['cv_font_size'] = generationOptions.fontSize;
+    profileData['cv_columns'] = generationOptions.columns;
+    profileData['cv_include_photo'] = profileData['cv_include_photo'] ?? 'sin_foto';
+    final normalizedUserPhone = userPhone.trim();
+    final previousPhone = (profileData['phone'] ?? '').trim();
+    profileData['phone'] = normalizedUserPhone.isNotEmpty ? normalizedUserPhone : previousPhone;
+    profileData['output_format'] = generationOptions.outputFormat;
+    profileData['cv_generation_mode'] = generationMode;
+    profileData['job_title'] = job.title;
+    profileData['job_company'] = job.company;
+    profileData['job_location'] = job.location;
+    profileData['job_description'] = job.summary.trim();
+
+    if (existingCvRecord != null) {
+      profileData['existing_cv_file_name'] = existingCvRecord['file_name']?.toString() ?? '';
+      profileData['existing_cv_public_url'] = existingCvRecord['public_url']?.toString() ?? '';
+      profileData['existing_cv_storage_path'] = existingCvRecord['storage_path']?.toString() ?? '';
+      profileData['existing_cv_source'] = existingCvRecord['source']?.toString() ?? '';
+      profileData['replace_existing_cv'] = generationMode == 'adapt_existing' ? 'true' : 'false';
+    }
+
+    return profileData;
+  }
+
+  Future<_JobCvFormData?> _showCvFormForJob({
+    required JobSearchResult job,
+    required Map<String, dynamic>? existingCvRecord,
+  }) async {
+    final existingProfileData = existingCvRecord?['profile_data'] as Map<String, dynamic>?;
+    final targetRolesController = TextEditingController(
+      text: (existingProfileData?['target_roles']?.toString().trim().isNotEmpty ?? false)
+          ? existingProfileData!['target_roles'].toString().trim()
+          : '${job.title} en ${job.company}',
+    );
+    final summaryController = TextEditingController(
+      text: existingProfileData?['summary']?.toString() ?? '',
+    );
+    final experienceController = TextEditingController(
+      text: existingProfileData?['experience']?.toString() ?? '',
+    );
+    final educationController = TextEditingController(
+      text: existingProfileData?['education']?.toString() ?? '',
+    );
+    final skillsController = TextEditingController(
+      text: existingProfileData?['skills']?.toString() ?? '',
+    );
+    final languagesController = TextEditingController(
+      text: existingProfileData?['languages']?.toString() ?? '',
+    );
+    final certificationsController = TextEditingController(
+      text: existingProfileData?['certifications']?.toString() ?? '',
+    );
+    final achievementsController = TextEditingController(
+      text: existingProfileData?['achievements']?.toString() ?? '',
+    );
+
+    var outputFormat = 'pdf';
+    var colorPalette = existingProfileData?['cv_color_palette']?.toString() ?? 'azul_profesional';
+    var fontSize = existingProfileData?['cv_font_size']?.toString() ?? 'estandar';
+    var columns = 'una_columna';
+
+    final result = await showDialog<_JobCvFormData>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
+          title: Text(tr(dialogContext, 'jobs.newCvForRole', args: {'title': job.title})),
+          content: SizedBox(
+            width: MediaQuery.of(dialogContext).size.width * 0.9,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: targetRolesController,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.targetRoles'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: summaryController,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.professionalSummary'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: experienceController,
+                    maxLines: 4,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.experience'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: educationController,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.education'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: skillsController,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.skills'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: languagesController,
+                    maxLines: 2,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.languages'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: certificationsController,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.certifications'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: achievementsController,
+                    maxLines: 3,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.achievements'),
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  InputDecorator(
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.outputFormat'),
+                      border: OutlineInputBorder(),
+                    ),
+                    child: Text(tr(dialogContext, 'cv.pdf')),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: colorPalette,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.colorPalette'),
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      DropdownMenuItem(value: 'azul_profesional', child: Text(tr(dialogContext, 'cv.palette.blueProfessional'))),
+                      DropdownMenuItem(value: 'verde_moderno', child: Text(tr(dialogContext, 'cv.palette.modernGreen'))),
+                      DropdownMenuItem(value: 'gris_ejecutivo', child: Text(tr(dialogContext, 'cv.palette.executiveGray'))),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      setDialogState(() {
+                        colorPalette = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: fontSize,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.fontSize'),
+                      border: OutlineInputBorder(),
+                    ),
+                    items: [
+                      DropdownMenuItem(value: 'compacta', child: Text(tr(dialogContext, 'cv.font.compact'))),
+                      DropdownMenuItem(value: 'estandar', child: Text(tr(dialogContext, 'cv.font.standard'))),
+                      DropdownMenuItem(value: 'amplia', child: Text(tr(dialogContext, 'cv.font.wide'))),
+                    ],
+                    onChanged: (value) {
+                      if (value == null) {
+                        return;
+                      }
+                      setDialogState(() {
+                        fontSize = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  InputDecorator(
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'cv.layout'),
+                      border: OutlineInputBorder(),
+                    ),
+                    child: Text(tr(dialogContext, 'cv.oneColumn')),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: Text(tr(dialogContext, 'common.cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(
+                _JobCvFormData(
+                  targetRoles: targetRolesController.text.trim(),
+                  summary: summaryController.text.trim(),
+                  experience: experienceController.text.trim(),
+                  education: educationController.text.trim(),
+                  skills: skillsController.text.trim(),
+                  languages: languagesController.text.trim(),
+                  certifications: certificationsController.text.trim(),
+                  achievements: achievementsController.text.trim(),
+                  outputFormat: outputFormat,
+                  colorPalette: colorPalette,
+                  fontSize: fontSize,
+                  columns: columns,
+                ),
+              ),
+              child: Text(tr(dialogContext, 'jobs.generateAndSave')),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return result;
+  }
+
+  Future<void> _openApplyWebViewForManualJob(JobSearchResult job) async {
+    final rawUrl = job.applyLink.trim();
+    final uri = Uri.tryParse(rawUrl);
+    final hasHttpScheme = uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+
+    if (rawUrl.isEmpty || rawUrl == '#' || !hasHttpScheme) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(tr(context, 'applications.invalidOfferLink'))),
+      );
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => _ApplicationApplyWebViewScreen(
+          jobTitle: job.title,
+          initialUrl: rawUrl,
+        ),
+      ),
+    );
   }
 
   String _statusLabel(BuildContext context, String status) {
@@ -363,7 +1096,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message)),
+        SnackBar(content: Text(localizedError(context, error.message))),
       );
     } catch (_) {
       if (!mounted) {
@@ -433,7 +1166,7 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message)),
+        SnackBar(content: Text(localizedError(context, error.message))),
       );
     } catch (_) {
       if (!mounted) {
@@ -478,18 +1211,38 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
             padding: const EdgeInsets.all(AppSpacing.md),
             children: [
               Text(
-                tr(context, 'nav.myJobs'),
+                tr(context, 'applications.header'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: AppSpacing.md),
+              Row(
+                children: [
+                  Expanded(
+                    child: SegmentedButton<bool>(
+                      segments: [
+                        ButtonSegment(value: false, label: Text(tr(context, 'applications.view.list')), icon: const Icon(Icons.view_list_rounded)),
+                        ButtonSegment(value: true, label: Text(tr(context, 'applications.view.board')), icon: const Icon(Icons.view_kanban_rounded)),
+                      ],
+                      selected: {_isBoardView},
+                      onSelectionChanged: (selection) => setState(() => _isBoardView = selection.first),
+                    ),
+                  ),
+                  const SizedBox(width: AppSpacing.xs),
+                  IconButton.filledTonal(
+                    tooltip: tr(context, 'applications.addManually'),
+                    onPressed: _openAddManualDialog,
+                    icon: const Icon(Icons.add_link_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppSpacing.sm),
               Align(
                 alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  onPressed: _openAddManualDialog,
-                  icon: const Icon(Icons.add_link_rounded),
-                  label: Text(tr(context, 'applications.addManually')),
+                child: Text(
+                  tr(context, 'applications.header.subtitle'),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.secondaryText),
                 ),
               ),
               const SizedBox(height: AppSpacing.sm),
@@ -508,10 +1261,52 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
                   ),
                 )
               else if (items.isEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(AppSpacing.md),
-                    child: Text(tr(context, 'applications.noneYet')),
+                Container(
+                  padding: const EdgeInsets.all(AppSpacing.md),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(AppRadii.md),
+                    border: Border.all(color: AppColors.softSurfaceBorder),
+                    boxShadow: AppShadows.card,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: 60,
+                        height: 60,
+                        decoration: BoxDecoration(color: AppColors.softGreen, borderRadius: BorderRadius.circular(18)),
+                        child: const Icon(Icons.rocket_launch_rounded, color: AppColors.primaryActive, size: 30),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      Text(tr(context, 'applications.empty.title'), style: Theme.of(context).textTheme.titleLarge),
+                      const SizedBox(height: AppSpacing.xs),
+                      Text(
+                        tr(context, 'applications.empty.subtitle'),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.secondaryText),
+                      ),
+                      const SizedBox(height: AppSpacing.md),
+                      FilledButton.icon(
+                        onPressed: widget.onExploreJobs,
+                        icon: const Icon(Icons.explore_outlined),
+                        label: Text(tr(context, 'applications.exploreJobs')),
+                      ),
+                    ],
+                  ),
+                )
+              else if (_isBoardView)
+                SizedBox(
+                  height: 410,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      _buildBoardColumn(context, items, 'Enviada', ['Aplicado']),
+                      _buildBoardColumn(context, items, 'En Revisión', ['CV revisado']),
+                      _buildBoardColumn(context, items, 'Entrevista', [
+                        'Primera entrevista', 'Segunda entrevista', 'Tercera entrevista', 'Entrevista tecnica',
+                      ]),
+                      _buildBoardColumn(context, items, 'Oferta', ['Oferta recibida', 'Contratado']),
+                    ],
                   ),
                 )
               else
@@ -601,6 +1396,76 @@ class _ApplicationsScreenState extends State<ApplicationsScreen> {
       ),
     );
   }
+
+  Widget _buildBoardColumn(
+    BuildContext context,
+    List<ApplicationRecord> items,
+    String title,
+    List<String> statuses,
+  ) {
+    final stageItems = items.where((item) => statuses.contains(_canonicalStatus(item.status))).toList();
+    final color = switch (title) {
+      'Enviada' => AppColors.secondaryText,
+      'En Revisión' => AppColors.blue,
+      'Entrevista' => AppColors.purple,
+      _ => AppColors.primary,
+    };
+
+    return Container(
+      width: 264,
+      margin: const EdgeInsets.only(right: AppSpacing.sm),
+      padding: const EdgeInsets.all(AppSpacing.sm),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        border: Border.all(color: AppColors.softSurfaceBorder),
+        borderRadius: BorderRadius.circular(AppRadii.md),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(title, style: Theme.of(context).textTheme.titleMedium)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(999)),
+                child: Text('${stageItems.length}', style: TextStyle(color: color, fontWeight: FontWeight.w700)),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Expanded(
+            child: stageItems.isEmpty
+                ? Center(child: Text('Sin candidaturas', style: Theme.of(context).textTheme.labelSmall))
+                : ListView.separated(
+                    itemCount: stageItems.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.xs),
+                    itemBuilder: (context, index) {
+                      final item = stageItems[index];
+                      return Material(
+                        color: AppColors.background,
+                        borderRadius: BorderRadius.circular(14),
+                        child: ListTile(
+                          dense: true,
+                          onTap: () => _showApplicationDetails(item),
+                          title: Text(item.vacancy, maxLines: 2, overflow: TextOverflow.ellipsis),
+                          subtitle: Text(item.website, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          trailing: PopupMenuButton<String>(
+                            tooltip: tr(context, 'applications.changeStatus'),
+                            onSelected: (newStatus) => _updateApplicationStatus(item, newStatus),
+                            itemBuilder: (context) => _applicationStatuses
+                                .map((status) => PopupMenuItem(value: status, child: Text(_statusLabel(context, status))))
+                                .toList(),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -654,13 +1519,13 @@ class _AddManualJobDialogState extends State<_AddManualJobDialog> {
       if (!mounted) {
         return;
       }
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop(_ManualApplicationSubmission(applicationUrl: rawUrl));
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) {
         return;
       }
       setState(() {
-        _errorMessage = error.message;
+        _errorMessage = localizedError(context, error.message);
         _isLoading = false;
       });
     } catch (_) {
@@ -722,4 +1587,159 @@ class _StatusPalette {
 
   final Color cardColor;
   final Color chipColor;
+}
+
+class _JobCvGenerationOptions {
+  const _JobCvGenerationOptions({
+    required this.outputFormat,
+    required this.colorPalette,
+    required this.fontSize,
+    required this.columns,
+  });
+
+  final String outputFormat;
+  final String colorPalette;
+  final String fontSize;
+  final String columns;
+}
+
+class _CvGenerationProgressState {
+  const _CvGenerationProgressState({
+    required this.stage,
+    required this.value,
+    required this.message,
+  });
+
+  final String stage;
+  final double value;
+  final String message;
+}
+
+class _JobCvFormData {
+  const _JobCvFormData({
+    required this.targetRoles,
+    required this.summary,
+    required this.experience,
+    required this.education,
+    required this.skills,
+    required this.languages,
+    required this.certifications,
+    required this.achievements,
+    required this.outputFormat,
+    required this.colorPalette,
+    required this.fontSize,
+    required this.columns,
+  });
+
+  final String targetRoles;
+  final String summary;
+  final String experience;
+  final String education;
+  final String skills;
+  final String languages;
+  final String certifications;
+  final String achievements;
+  final String outputFormat;
+  final String colorPalette;
+  final String fontSize;
+  final String columns;
+}
+
+class _ManualApplicationSubmission {
+  const _ManualApplicationSubmission({
+    required this.applicationUrl,
+  });
+
+  final String applicationUrl;
+}
+
+class _ApplicationApplyWebViewScreen extends StatefulWidget {
+  const _ApplicationApplyWebViewScreen({
+    required this.jobTitle,
+    required this.initialUrl,
+  });
+
+  final String jobTitle;
+  final String initialUrl;
+
+  @override
+  State<_ApplicationApplyWebViewScreen> createState() => _ApplicationApplyWebViewScreenState();
+}
+
+class _ApplicationApplyWebViewScreenState extends State<_ApplicationApplyWebViewScreen> {
+  late final WebViewController _controller;
+  int _progress = 0;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onProgress: (progress) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _progress = progress;
+            });
+          },
+          onPageStarted: (_) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _errorMessage = null;
+            });
+          },
+          onWebResourceError: (error) {
+            if (!mounted) {
+              return;
+            }
+            setState(() {
+              _errorMessage = error.description;
+            });
+          },
+        ),
+      )
+      ..loadRequest(Uri.parse(widget.initialUrl));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final titleText = widget.jobTitle.trim().isNotEmpty
+        ? widget.jobTitle.trim()
+        : tr(context, 'jobs.application');
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          titleText,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            if (_progress < 100)
+              LinearProgressIndicator(value: _progress == 0 ? null : _progress / 100),
+            if (_errorMessage != null)
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  tr(context, 'jobs.couldNotLoadPage', args: {'error': '$_errorMessage'}),
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+            Expanded(
+              child: WebViewWidget(controller: _controller),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

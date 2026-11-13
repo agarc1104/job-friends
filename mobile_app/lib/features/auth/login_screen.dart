@@ -23,12 +23,14 @@ class LoginScreen extends StatefulWidget {
     required this.onAuthenticated,
     required this.onLogout,
     required this.currentUser,
+    this.initialReferralCode,
     super.key,
   });
 
   final AuthenticatedHandler onAuthenticated;
   final VoidCallback onLogout;
   final UserProfile? currentUser;
+  final String? initialReferralCode;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -43,6 +45,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _registerEmailController = TextEditingController();
   final _registerPasswordController = TextEditingController();
   final _registerPhoneController = TextEditingController();
+  final _registerReferralCodeController = TextEditingController();
   final _companyNameController = TextEditingController();
   final _companyEmailController = TextEditingController();
   final _companyPhoneController = TextEditingController();
@@ -107,9 +110,21 @@ class _LoginScreenState extends State<LoginScreen> {
     _registerEmailController.addListener(_onFieldChanged);
     _registerPhoneController.addListener(_onFieldChanged);
     _registerPasswordController.addListener(_onFieldChanged);
+    _registerReferralCodeController.addListener(_onFieldChanged);
     _companyNameController.addListener(_onFieldChanged);
     _companyEmailController.addListener(_onFieldChanged);
     _companyPhoneController.addListener(_onFieldChanged);
+    _registerReferralCodeController.text = (widget.initialReferralCode ?? '').trim().toUpperCase();
+  }
+
+  @override
+  void didUpdateWidget(covariant LoginScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final previousCode = (oldWidget.initialReferralCode ?? '').trim().toUpperCase();
+    final newCode = (widget.initialReferralCode ?? '').trim().toUpperCase();
+    if (newCode.isNotEmpty && newCode != previousCode && _registerReferralCodeController.text.trim().isEmpty) {
+      _registerReferralCodeController.text = newCode;
+    }
   }
 
   void _onFieldChanged() {
@@ -128,6 +143,7 @@ class _LoginScreenState extends State<LoginScreen> {
     _registerEmailController.removeListener(_onFieldChanged);
     _registerPhoneController.removeListener(_onFieldChanged);
     _registerPasswordController.removeListener(_onFieldChanged);
+    _registerReferralCodeController.removeListener(_onFieldChanged);
     _companyNameController.removeListener(_onFieldChanged);
     _companyEmailController.removeListener(_onFieldChanged);
     _companyPhoneController.removeListener(_onFieldChanged);
@@ -138,13 +154,14 @@ class _LoginScreenState extends State<LoginScreen> {
     _registerEmailController.dispose();
     _registerPasswordController.dispose();
     _registerPhoneController.dispose();
+    _registerReferralCodeController.dispose();
     _companyNameController.dispose();
     _companyEmailController.dispose();
     _companyPhoneController.dispose();
     super.dispose();
   }
 
-  Future<void> _runAction(
+  Future<UserProfile?> _runAction(
     Future<UserProfile> Function() action, {
     bool rememberMe = false,
     String email = '',
@@ -159,7 +176,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final profile = await action();
       if (!mounted) {
-        return;
+        return null;
       }
       await widget.onAuthenticated(
         profile,
@@ -168,21 +185,22 @@ class _LoginScreenState extends State<LoginScreen> {
         password: password,
       );
       if (!mounted) {
-        return;
+        return null;
       }
       setState(() {
         _statusMessage = tr(context, 'auth.sessionStartedAs', args: {'email': profile.email});
       });
+      return profile;
     } on JobFriendsRepositoryException catch (error) {
       if (!mounted) {
-        return;
+        return null;
       }
       setState(() {
-        _statusMessage = error.message;
+        _statusMessage = localizedError(context, error.message);
       });
     } catch (_) {
       if (!mounted) {
-        return;
+        return null;
       }
       setState(() {
         _statusMessage = tr(context, 'auth.couldNotConnectSupabase');
@@ -194,6 +212,8 @@ class _LoginScreenState extends State<LoginScreen> {
         });
       }
     }
+
+    return null;
   }
 
   Future<void> _submitCompanyInterest() async {
@@ -223,7 +243,7 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
       setState(() {
-        _statusMessage = error.message;
+        _statusMessage = localizedError(context, error.message);
       });
     } catch (_) {
       if (!mounted) {
@@ -238,6 +258,230 @@ class _LoginScreenState extends State<LoginScreen> {
           _isSubmitting = false;
         });
       }
+    }
+  }
+
+  Future<void> _submitForgotPassword() async {
+    if (_isSubmitting) {
+      return;
+    }
+
+    final emailController = TextEditingController(text: _loginEmailController.text.trim());
+    final fullNameController = TextEditingController();
+    final phoneController = TextEditingController();
+    String? validationError;
+
+    final identity = await showDialog<Map<String, String>?>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) => AlertDialog(
+            title: Text(tr(dialogContext, 'auth.recoveryIdentityTitle')),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tr(dialogContext, 'auth.recoveryIdentityDescription'),
+                    style: Theme.of(dialogContext).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  TextField(
+                    controller: emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'auth.email'),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  TextField(
+                    controller: fullNameController,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'auth.fullName'),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: AppSpacing.sm),
+                  TextField(
+                    controller: phoneController,
+                    keyboardType: TextInputType.phone,
+                    decoration: InputDecoration(
+                      labelText: tr(dialogContext, 'auth.phone'),
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  if (validationError != null) ...[
+                    const SizedBox(height: AppSpacing.xs),
+                    Text(
+                      validationError!,
+                      style: Theme.of(dialogContext).textTheme.bodySmall?.copyWith(
+                            color: const Color(0xFFBC4749),
+                          ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text(tr(dialogContext, 'common.cancel')),
+              ),
+              FilledButton(
+                onPressed: () {
+                  final email = emailController.text.trim().toLowerCase();
+                  final fullName = fullNameController.text.trim();
+                  final phone = phoneController.text.trim();
+
+                  if (email.isEmpty || fullName.isEmpty || phone.isEmpty) {
+                    setDialogState(() {
+                      validationError = tr(dialogContext, 'auth.recoveryEnterAllFields');
+                    });
+                    return;
+                  }
+
+                  if (!_isValidEmail(email)) {
+                    setDialogState(() {
+                      validationError = tr(dialogContext, 'auth.invalidEmail');
+                    });
+                    return;
+                  }
+
+                  if (!_isValidPhone(phone)) {
+                    setDialogState(() {
+                      validationError = tr(dialogContext, 'auth.invalidPhone');
+                    });
+                    return;
+                  }
+
+                  Navigator.of(dialogContext).pop({
+                    'email': email,
+                    'fullName': fullName,
+                    'phone': phone,
+                  });
+                },
+                child: Text(tr(dialogContext, 'auth.recoveryVerifyAndSendLink')),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    emailController.dispose();
+    fullNameController.dispose();
+    phoneController.dispose();
+
+    if (identity == null || !mounted) {
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _isSubmitting = true;
+      _statusMessage = null;
+    });
+
+    try {
+      final verified = await _repository.verifyPasswordRecoveryIdentity(
+        email: identity['email'] ?? '',
+        fullName: identity['fullName'] ?? '',
+        phone: identity['phone'] ?? '',
+      );
+
+      if (!verified) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _statusMessage = tr(context, 'auth.recoveryIdentityMismatch');
+        });
+        return;
+      }
+
+      await _repository.requestPasswordRecovery(
+        email: identity['email'] ?? '',
+      );
+
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = tr(context, 'auth.recoveryCheckEmail');
+      });
+    } on JobFriendsRepositoryException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = localizedError(context, error.message);
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = tr(context, 'auth.recoveryCouldNotStart');
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _submitJobSeekerRegister() async {
+    final referralCode = _registerReferralCodeController.text.trim().toUpperCase();
+
+    final profile = await _runAction(
+      () => _repository.register(
+        email: _registerEmailController.text,
+        password: _registerPasswordController.text,
+        firstName: _registerNameController.text,
+        lastName: _registerLastNameController.text,
+        phone: _registerPhoneController.text,
+      ),
+      rememberMe: false,
+    );
+
+    if (profile == null || referralCode.isEmpty || !mounted) {
+      return;
+    }
+
+    try {
+      await _repository.applyReferralCode(referralCode);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = tr(context, 'auth.accountCreatedReferralApplied');
+      });
+    } on JobFriendsRepositoryException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = tr(
+          context,
+          'auth.accountCreatedReferralFailed',
+          args: {'error': localizedError(context, error.message)},
+        );
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _statusMessage = tr(
+          context,
+          'auth.accountCreatedReferralFailed',
+          args: {'error': tr(context, 'profile.referralApplyError')},
+        );
+      });
     }
   }
 
@@ -351,7 +595,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: AppSpacing.md),
                   SizedBox(
-                    height: 520,
+                    height: 620,
                     child: TabBarView(
                       children: [
                         _AuthForm(
@@ -374,17 +618,41 @@ class _LoginScreenState extends State<LoginScreen> {
                                 border: const OutlineInputBorder(),
                               ),
                             ),
-                            CheckboxListTile(
-                              value: _rememberMe,
-                              contentPadding: EdgeInsets.zero,
-                              title: Text(tr(context, 'auth.rememberMe')),
-                              onChanged: _isSubmitting
-                                  ? null
-                                  : (value) {
-                                      setState(() {
-                                        _rememberMe = value ?? false;
-                                      });
-                                    },
+                            Row(
+                              children: [
+                                Checkbox(
+                                  value: _rememberMe,
+                                  onChanged: _isSubmitting
+                                      ? null
+                                      : (value) {
+                                          setState(() {
+                                            _rememberMe = value ?? false;
+                                          });
+                                        },
+                                ),
+                                Expanded(
+                                  child: GestureDetector(
+                                    onTap: _isSubmitting
+                                        ? null
+                                        : () {
+                                            setState(() {
+                                              _rememberMe = !_rememberMe;
+                                            });
+                                          },
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(vertical: 8),
+                                      child: Text(tr(context, 'auth.rememberMe')),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton(
+                                onPressed: _isSubmitting ? null : _submitForgotPassword,
+                                child: Text(tr(context, 'auth.forgotPassword')),
+                              ),
                             ),
                           ],
                           helper: null,
@@ -470,6 +738,15 @@ class _LoginScreenState extends State<LoginScreen> {
                                   border: const OutlineInputBorder(),
                                 ),
                               ),
+                              TextField(
+                                controller: _registerReferralCodeController,
+                                autocorrect: false,
+                                textCapitalization: TextCapitalization.characters,
+                                decoration: InputDecoration(
+                                  labelText: tr(context, 'auth.referralCodeOptional'),
+                                  border: const OutlineInputBorder(),
+                                ),
+                              ),
                             ] else ...[
                               TextField(
                                 controller: _companyNameController,
@@ -503,16 +780,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               : null,
                           onSubmit: _registerMode == _RegisterMode.jobSeeker
                               ? (_canSubmitRegister
-                                  ? () => _runAction(
-                                        () => _repository.register(
-                                          email: _registerEmailController.text,
-                                          password: _registerPasswordController.text,
-                                          firstName: _registerNameController.text,
-                                          lastName: _registerLastNameController.text,
-                                          phone: _registerPhoneController.text,
-                                        ),
-                                        rememberMe: false,
-                                      )
+                                  ? _submitJobSeekerRegister
                                   : null)
                               : (_canSubmitCompanyInterest
                                   ? _submitCompanyInterest
@@ -553,7 +821,7 @@ class _AuthForm extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListView.separated(
-      physics: const NeverScrollableScrollPhysics(),
+      physics: const ClampingScrollPhysics(),
       itemCount: fields.length + 2,
       separatorBuilder: (_, __) => const SizedBox(height: AppSpacing.sm),
       itemBuilder: (context, index) {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,16 +13,38 @@ import '../../data/jobfriends_repository.dart';
 import '../ads/rewarded_interstitial_ads_service.dart';
 import '../../l10n/localized_text.dart';
 import '../../models/cv_generated_result.dart';
+import '../../models/cv_draft_result.dart';
 import '../../models/job_search_result.dart';
 import '../../models/user_profile.dart';
+import '../widgets/cv_draft_preview_panel.dart';
+import '../widgets/cv_section_selector.dart';
 import '../../theme/design_system.dart';
 
 const List<String> _quickFilterOptions = [
-  'Remoto',
-  'Tiempo completo',
-  'Junior',
-  'IA',
+  'remote',
+  'ai',
+  'frontend',
+  'junior',
+  'full-time',
 ];
+
+const _filterLabelKeys = <String, String>{
+  'remote': 'jobs.filter.remote',
+  'ai': 'jobs.filter.ai',
+  'frontend': 'jobs.filter.frontend',
+  'junior': 'jobs.filter.junior',
+  'full-time': 'jobs.filter.fullTime',
+};
+
+String _filterLabel(BuildContext context, String canonicalKey) {
+  return tr(context, _filterLabelKeys[canonicalKey] ?? canonicalKey);
+}
+
+const _prefUseAutoLocationKey = 'jobs.useAutoLocation';
+const _prefManualCityKey = 'jobs.manualCity';
+const _prefManualRegionKey = 'jobs.manualRegion';
+const _prefManualCountryKey = 'jobs.manualCountry';
+const _prefSavedJobsKey = 'jobs.savedJobKeys';
 
 class JobsScreen extends StatefulWidget {
   const JobsScreen({
@@ -40,51 +63,44 @@ class JobsScreen extends StatefulWidget {
 }
 
 class _JobsScreenState extends State<JobsScreen> {
-  static const _prefUseAutoLocationKey = 'jobs.use_auto_location';
-  static const _prefManualCityKey = 'jobs.manual_city';
-  static const _prefManualRegionKey = 'jobs.manual_region';
-  static const _prefManualCountryKey = 'jobs.manual_country';
+  final JobFriendsRepository _repository = JobFriendsRepository();
+  final RewardedInterstitialAdsService _rewardedInterstitialAds = RewardedInterstitialAdsService.instance;
+  final TextEditingController _keywordController = TextEditingController();
+  final FocusNode _keywordFocusNode = FocusNode();
+  final TextEditingController _cityController = TextEditingController();
+  final TextEditingController _regionController = TextEditingController();
+  final TextEditingController _countryController = TextEditingController();
+  final Set<String> _selectedQuickFilters = <String>{};
+  final Set<String> _savedJobKeys = <String>{};
 
-  final _repository = const JobFriendsRepository();
-  final _rewardedInterstitialAds = RewardedInterstitialAdsService.instance;
-  final _keywordController = TextEditingController();
-  final _cityController = TextEditingController();
-  final _regionController = TextEditingController();
-  final _countryController = TextEditingController();
-  List<JobSearchResult> _results = const [];
-  bool _isSearching = false;
-  bool _isSaving = false;
-  bool _useAutoLocation = true;
-  bool _isResolvingLocation = false;
-  bool _isLoadingMore = false;
+  Timer? _prefsDebounce;
+  List<JobSearchResult> _results = [];
+  String? _nextPageToken;
   String? _detectedCity;
   String? _detectedRegion;
   String? _detectedCountry;
   String? _detectedCountryCode;
-  String? _nextPageToken;
   String _lastKeywords = '';
   String _lastCity = '';
   String _lastRegion = '';
   String _lastCountry = '';
   String _lastCountryCode = '';
-  final Set<String> _selectedQuickFilters = <String>{};
-  Timer? _prefsDebounce;
-
-  void _logDebug(String message) {
-    if (!kDebugMode) {
-      return;
-    }
-    debugPrint('[JobsScreen] $message');
-  }
+  String _latestJobDraftId = '';
+  bool _useAutoLocation = true;
+  bool _isResolvingLocation = false;
+  bool _isSearching = false;
+  bool _isLoadingMore = false;
+  bool _isSaving = false;
 
   @override
   void initState() {
     super.initState();
-    unawaited(_rewardedInterstitialAds.preload());
+    _keywordController.addListener(_onManualLocationChanged);
     _cityController.addListener(_onManualLocationChanged);
     _regionController.addListener(_onManualLocationChanged);
     _countryController.addListener(_onManualLocationChanged);
-    _loadSearchPreferences();
+    unawaited(_loadSearchPreferences());
+    unawaited(_loadSavedJobs());
   }
 
   @override
@@ -96,6 +112,12 @@ class _JobsScreenState extends State<JobsScreen> {
     }
   }
 
+  void _logDebug(String message) {
+    if (kDebugMode) {
+      debugPrint('[JobsScreen] $message');
+    }
+  }
+
   @override
   void dispose() {
     _prefsDebounce?.cancel();
@@ -103,6 +125,7 @@ class _JobsScreenState extends State<JobsScreen> {
     _regionController.removeListener(_onManualLocationChanged);
     _countryController.removeListener(_onManualLocationChanged);
     _keywordController.dispose();
+    _keywordFocusNode.dispose();
     _cityController.dispose();
     _regionController.dispose();
     _countryController.dispose();
@@ -128,6 +151,18 @@ class _JobsScreenState extends State<JobsScreen> {
     });
 
     _maybeResolveLocationOnEntry();
+  }
+
+  Future<void> _loadSavedJobs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedKeys = prefs.getStringList(_prefSavedJobsKey) ?? const <String>[];
+    if (!mounted) return;
+    setState(() => _savedJobKeys.addAll(savedKeys));
+  }
+
+  Future<void> _persistSavedJobs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_prefSavedJobsKey, _savedJobKeys.toList());
   }
 
   void _maybeResolveLocationOnEntry() {
@@ -183,59 +218,6 @@ class _JobsScreenState extends State<JobsScreen> {
     }
 
     return normalizedParts.join(', ');
-  }
-
-  String _stripDiacritics(String value) {
-    const replacements = {
-      'á': 'a',
-      'à': 'a',
-      'ä': 'a',
-      'â': 'a',
-      'Á': 'A',
-      'À': 'A',
-      'Ä': 'A',
-      'Â': 'A',
-      'é': 'e',
-      'è': 'e',
-      'ë': 'e',
-      'ê': 'e',
-      'É': 'E',
-      'È': 'E',
-      'Ë': 'E',
-      'Ê': 'E',
-      'í': 'i',
-      'ì': 'i',
-      'ï': 'i',
-      'î': 'i',
-      'Í': 'I',
-      'Ì': 'I',
-      'Ï': 'I',
-      'Î': 'I',
-      'ó': 'o',
-      'ò': 'o',
-      'ö': 'o',
-      'ô': 'o',
-      'Ó': 'O',
-      'Ò': 'O',
-      'Ö': 'O',
-      'Ô': 'O',
-      'ú': 'u',
-      'ù': 'u',
-      'ü': 'u',
-      'û': 'u',
-      'Ú': 'U',
-      'Ù': 'U',
-      'Ü': 'U',
-      'Û': 'U',
-      'ñ': 'n',
-      'Ñ': 'N',
-    };
-
-    var result = value;
-    replacements.forEach((key, replacement) {
-      result = result.replaceAll(key, replacement);
-    });
-    return result;
   }
 
   String _cleanAutoLocationPart(String value) {
@@ -365,7 +347,7 @@ class _JobsScreenState extends State<JobsScreen> {
         locationSettings: const LocationSettings(accuracy: LocationAccuracy.medium),
       );
 
-      final placemarks = await placemarkFromCoordinates(
+      final placemarks = await Geocoding().placemarkFromCoordinates(
         position.latitude,
         position.longitude,
       );
@@ -510,7 +492,7 @@ class _JobsScreenState extends State<JobsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message)),
+        SnackBar(content: Text(localizedError(context, error.message))),
       );
     } catch (_) {
       _logDebug('search unexpected error');
@@ -578,7 +560,7 @@ class _JobsScreenState extends State<JobsScreen> {
       );
     } on JobFriendsRepositoryException catch (error) {
       _logDebug('load more repository error=${error.message}');
-      _showMessage(error.message);
+      _showMessage(localizedError(context, error.message));
     } catch (_) {
       _logDebug('load more unexpected error');
       _showMessage(tr(context, 'jobs.couldNotLoadNextPage'));
@@ -631,7 +613,7 @@ class _JobsScreenState extends State<JobsScreen> {
         return;
       }
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(error.message)),
+        SnackBar(content: Text(localizedError(context, error.message))),
       );
     } catch (_) {
       if (!mounted) {
@@ -737,10 +719,10 @@ class _JobsScreenState extends State<JobsScreen> {
     _JobCvFormData? formData,
   }) async {
     final progressNotifier = ValueNotifier<_CvGenerationProgressState>(
-      const _CvGenerationProgressState(
+      _CvGenerationProgressState(
         stage: 'initial',
         value: 0.1,
-        message: 'Calentando motores: organizando la vacante y tu perfil...',
+        message: _cvGenerationWarmupMessage(),
       ),
     );
     var progressDisposed = false;
@@ -751,7 +733,9 @@ class _JobsScreenState extends State<JobsScreen> {
       generationMode: generationMode,
       formData: formData,
       generationOptions: generationOptions,
+      userPhone: user.phone,
     );
+    final draftId = _latestJobDraftId;
 
     try {
       await _rewardedInterstitialAds.maybeShow(
@@ -765,6 +749,7 @@ class _JobsScreenState extends State<JobsScreen> {
           email: user.email,
           outputFormat: generationOptions.outputFormat,
           profileData: profileData,
+          draftId: draftId,
           onProgress: ({required stage, required progress, required message}) {
             if (progressDisposed) {
               return;
@@ -785,6 +770,7 @@ class _JobsScreenState extends State<JobsScreen> {
     } finally {
       progressDisposed = true;
       progressNotifier.dispose();
+      _latestJobDraftId = '';
     }
   }
 
@@ -866,7 +852,7 @@ class _JobsScreenState extends State<JobsScreen> {
               if (snapshot.hasError) {
                 final error = snapshot.error;
                 final message = error is JobFriendsRepositoryException
-                    ? error.message
+                    ? localizedError(context, error.message)
                     : tr(context, 'jobs.couldNotGenerateCvForRole');
                 return AlertDialog(
                   title: Text(tr(context, 'jobs.couldNotGenerateCv')),
@@ -936,6 +922,25 @@ class _JobsScreenState extends State<JobsScreen> {
     }
   }
 
+  String _cvGenerationWarmupMessage() {
+    final languageCode = Localizations.localeOf(context).languageCode.toLowerCase();
+    switch (languageCode) {
+      case 'es':
+        return 'Calentando motores: organizando la vacante y tu perfil...';
+      case 'pt':
+        return 'Aquecendo os motores: organizando a vaga e o seu perfil...';
+      case 'fr':
+        return 'Mise en route: organisation de l\'offre et de votre profil...';
+      case 'de':
+        return 'Motoren laufen an: Stelle und Ihr Profil werden vorbereitet...';
+      case 'it':
+        return 'Scaldiamo i motori: stiamo organizzando la posizione e il tuo profilo...';
+      case 'en':
+      default:
+        return 'Warming up: organizing the vacancy and your profile...';
+    }
+  }
+
   Future<void> _openGeneratedCvUrl(CvGeneratedResult generated) async {
     final uri = Uri.tryParse(generated.publicUrl);
     if (uri == null) {
@@ -954,6 +959,7 @@ class _JobsScreenState extends State<JobsScreen> {
     required Map<String, dynamic>? existingCvRecord,
     required String generationMode,
     required _JobCvGenerationOptions generationOptions,
+    required String userPhone,
     _JobCvFormData? formData,
   }) {
     final rawExistingProfileData = existingCvRecord?['profile_data'];
@@ -1014,6 +1020,9 @@ class _JobsScreenState extends State<JobsScreen> {
     profileData['cv_font_size'] = generationOptions.fontSize;
     profileData['cv_columns'] = generationOptions.columns;
     profileData['cv_include_photo'] = profileData['cv_include_photo'] ?? 'sin_foto';
+    final normalizedUserPhone = userPhone.trim();
+    final previousPhone = (profileData['phone'] ?? '').trim();
+    profileData['phone'] = normalizedUserPhone.isNotEmpty ? normalizedUserPhone : previousPhone;
     profileData['output_format'] = generationOptions.outputFormat;
     profileData['cv_generation_mode'] = generationMode;
     profileData['job_title'] = job.title;
@@ -1036,6 +1045,7 @@ class _JobsScreenState extends State<JobsScreen> {
     required JobSearchResult job,
     required Map<String, dynamic>? existingCvRecord,
   }) async {
+    _latestJobDraftId = '';
     final existingProfileData = existingCvRecord?['profile_data'] as Map<String, dynamic>?;
     final targetRolesController = TextEditingController(
       text: (existingProfileData?['target_roles']?.toString().trim().isNotEmpty ?? false)
@@ -1068,6 +1078,94 @@ class _JobsScreenState extends State<JobsScreen> {
     var colorPalette = existingProfileData?['cv_color_palette']?.toString() ?? 'azul_profesional';
     var fontSize = existingProfileData?['cv_font_size']?.toString() ?? 'estandar';
     var columns = 'una_columna';
+    CvDraftResult? draftResult;
+    var isRequestingDraft = false;
+    var selectedSection = 'target_roles';
+    final reviewScrollController = ScrollController();
+    final reviewSectionKeys = <String, GlobalKey>{
+      'target_roles': GlobalKey(),
+      'summary': GlobalKey(),
+      'experience': GlobalKey(),
+      'education': GlobalKey(),
+      'skills': GlobalKey(),
+      'languages': GlobalKey(),
+      'certifications': GlobalKey(),
+      'achievements': GlobalKey(),
+    };
+
+    _JobCvFormData buildCurrentFormData() {
+      return _JobCvFormData(
+        targetRoles: targetRolesController.text.trim(),
+        summary: summaryController.text.trim(),
+        experience: experienceController.text.trim(),
+        education: educationController.text.trim(),
+        skills: skillsController.text.trim(),
+        languages: languagesController.text.trim(),
+        certifications: certificationsController.text.trim(),
+        achievements: achievementsController.text.trim(),
+        outputFormat: outputFormat,
+        colorPalette: colorPalette,
+        fontSize: fontSize,
+        columns: columns,
+      );
+    }
+
+    Future<void> requestDraft(StateSetter setDialogState) async {
+      final activeUser = widget.currentUser;
+      if (activeUser == null) {
+        return;
+      }
+
+      setDialogState(() {
+        isRequestingDraft = true;
+      });
+
+      try {
+        final updatedDraft = await _repository.generateCvDraft(
+          fullName: activeUser.fullName,
+          email: activeUser.email,
+          outputFormat: outputFormat,
+          profileData: _buildCvProfileDataForJob(
+            job: job,
+            existingCvRecord: existingCvRecord,
+            generationMode: existingCvRecord == null ? 'new_from_form' : 'adapt_existing',
+            generationOptions: _JobCvGenerationOptions(
+              outputFormat: outputFormat,
+              colorPalette: colorPalette,
+              fontSize: fontSize,
+              columns: columns,
+            ),
+            userPhone: activeUser.phone,
+            formData: buildCurrentFormData(),
+          ),
+        );
+
+        if (!mounted) {
+          return;
+        }
+
+        setDialogState(() {
+          draftResult = updatedDraft;
+        });
+        _latestJobDraftId = updatedDraft.draftId;
+      } catch (error) {
+        if (!mounted) {
+          return;
+        }
+        final message = error is JobFriendsRepositoryException
+            ? localizedError(context, error.message)
+            : tr(context, 'cv.couldNotGenerateSuggestion');
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      } finally {
+        if (mounted) {
+          setDialogState(() {
+            isRequestingDraft = false;
+          });
+        }
+      }
+    }
 
     final result = await showDialog<_JobCvFormData>(
       context: context,
@@ -1077,79 +1175,252 @@ class _JobsScreenState extends State<JobsScreen> {
           content: SizedBox(
             width: MediaQuery.of(dialogContext).size.width * 0.9,
             child: SingleChildScrollView(
+              controller: reviewScrollController,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextField(
-                    controller: targetRolesController,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.targetRoles'),
-                      border: OutlineInputBorder(),
+                  CvSectionSelector(
+                    sections: {
+                      'target_roles': tr(dialogContext, 'cv.targetRoles'),
+                      'summary': tr(dialogContext, 'cv.professionalSummary'),
+                      'experience': tr(dialogContext, 'cv.experience'),
+                      'education': tr(dialogContext, 'cv.education'),
+                      'skills': tr(dialogContext, 'cv.skills'),
+                      'languages': tr(dialogContext, 'cv.languages'),
+                      'certifications': tr(dialogContext, 'cv.certifications'),
+                      'achievements': tr(dialogContext, 'cv.achievements'),
+                    },
+                    selectedSection: selectedSection,
+                    onSectionSelected: (sectionId) async {
+                      setDialogState(() {
+                        selectedSection = sectionId;
+                      });
+                      final targetContext = reviewSectionKeys[sectionId]?.currentContext;
+                      if (targetContext != null) {
+                        await Scrollable.ensureVisible(
+                          targetContext,
+                          duration: const Duration(milliseconds: 250),
+                          curve: Curves.easeInOut,
+                          alignment: 0.1,
+                        );
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    key: reviewSectionKeys['target_roles'],
+                    child: TextField(
+                      controller: targetRolesController,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.targetRoles'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: summaryController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.professionalSummary'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['summary'],
+                    child: TextField(
+                      controller: summaryController,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.professionalSummary'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: experienceController,
-                    maxLines: 4,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.experience'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['experience'],
+                    child: TextField(
+                      controller: experienceController,
+                      maxLines: 4,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.experience'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: educationController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.education'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['education'],
+                    child: TextField(
+                      controller: educationController,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.education'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: skillsController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.skills'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['skills'],
+                    child: TextField(
+                      controller: skillsController,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.skills'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: languagesController,
-                    maxLines: 2,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.languages'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['languages'],
+                    child: TextField(
+                      controller: languagesController,
+                      maxLines: 2,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.languages'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: certificationsController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.certifications'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['certifications'],
+                    child: TextField(
+                      controller: certificationsController,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.certifications'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  TextField(
-                    controller: achievementsController,
-                    maxLines: 3,
-                    decoration: InputDecoration(
-                      labelText: tr(dialogContext, 'cv.achievements'),
-                      border: OutlineInputBorder(),
+                  Container(
+                    key: reviewSectionKeys['achievements'],
+                    child: TextField(
+                      controller: achievementsController,
+                      maxLines: 3,
+                      decoration: InputDecoration(
+                        labelText: tr(dialogContext, 'cv.achievements'),
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  CvSectionSelector(
+                    sections: {
+                      'target_roles': tr(dialogContext, 'cv.targetRoles'),
+                      'summary': tr(dialogContext, 'cv.professionalSummary'),
+                      'experience': tr(dialogContext, 'cv.experience'),
+                      'education': tr(dialogContext, 'cv.education'),
+                      'skills': tr(dialogContext, 'cv.skills'),
+                      'languages': tr(dialogContext, 'cv.languages'),
+                      'certifications': tr(dialogContext, 'cv.certifications'),
+                      'achievements': tr(dialogContext, 'cv.achievements'),
+                    },
+                    selectedSection: selectedSection,
+                    onSectionSelected: (sectionId) {
+                      setDialogState(() {
+                        selectedSection = sectionId;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  CvDraftPreviewPanel(
+                    sections: {
+                      'target_roles': tr(dialogContext, 'cv.targetRoles'),
+                      'summary': tr(dialogContext, 'cv.professionalSummary'),
+                      'experience': tr(dialogContext, 'cv.experience'),
+                      'education': tr(dialogContext, 'cv.education'),
+                      'skills': tr(dialogContext, 'cv.skills'),
+                      'languages': tr(dialogContext, 'cv.languages'),
+                      'certifications': tr(dialogContext, 'cv.certifications'),
+                      'achievements': tr(dialogContext, 'cv.achievements'),
+                    },
+                    sectionValues: {
+                      'target_roles': targetRolesController.text.trim(),
+                      'summary': summaryController.text.trim(),
+                      'experience': experienceController.text.trim(),
+                      'education': educationController.text.trim(),
+                      'skills': skillsController.text.trim(),
+                      'languages': languagesController.text.trim(),
+                      'certifications': certificationsController.text.trim(),
+                      'achievements': achievementsController.text.trim(),
+                    },
+                    activeSectionId: selectedSection,
+                    technicalDetailsTitle: tr(dialogContext, 'cv.technicalDraftDetails'),
+                    technicalDetailsHint: tr(dialogContext, 'cv.technicalDraftHint'),
+                    rawDraftLabel: tr(dialogContext, 'cv.rawDraftLabel'),
+                    rawDraft: draftResult?.latex,
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: isRequestingDraft
+                        ? null
+                        : () async {
+                            final edited = await showDialog<_JobCvFormData>(
+                              context: dialogContext,
+                              builder: (editContext) => AlertDialog(
+                                title: Text(tr(editContext, 'cv.editSections')),
+                                content: SizedBox(
+                                  width: MediaQuery.of(editContext).size.width * 0.92,
+                                  child: SingleChildScrollView(
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        TextField(controller: targetRolesController, decoration: InputDecoration(labelText: tr(editContext, 'cv.targetRoles'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: summaryController, maxLines: 3, decoration: InputDecoration(labelText: tr(editContext, 'cv.professionalSummary'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: experienceController, maxLines: 4, decoration: InputDecoration(labelText: tr(editContext, 'cv.experience'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: educationController, maxLines: 3, decoration: InputDecoration(labelText: tr(editContext, 'cv.education'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: skillsController, maxLines: 3, decoration: InputDecoration(labelText: tr(editContext, 'cv.skills'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: languagesController, maxLines: 2, decoration: InputDecoration(labelText: tr(editContext, 'cv.languages'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: certificationsController, maxLines: 3, decoration: InputDecoration(labelText: tr(editContext, 'cv.certifications'))),
+                                        const SizedBox(height: 12),
+                                        TextField(controller: achievementsController, maxLines: 3, decoration: InputDecoration(labelText: tr(editContext, 'cv.achievements'))),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.of(editContext).pop(),
+                                    child: Text(tr(editContext, 'common.cancel')),
+                                  ),
+                                  FilledButton(
+                                    onPressed: () => Navigator.of(editContext).pop(
+                                      buildCurrentFormData(),
+                                    ),
+                                    child: Text(tr(editContext, 'cv.saveChangesAndRefresh')),
+                                  ),
+                                ],
+                              ),
+                            );
+
+                            if (edited == null) {
+                              return;
+                            }
+
+                            setDialogState(() {
+                              draftResult = null;
+                            });
+                            await requestDraft(setDialogState);
+                          },
+                    icon: const Icon(Icons.edit_note_rounded),
+                    label: Text(tr(dialogContext, 'cv.editSections')),
+                  ),
+                  const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: isRequestingDraft ? null : () => requestDraft(setDialogState),
+                      icon: isRequestingDraft
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.preview_rounded),
+                        label: Text(tr(dialogContext, 'cv.aiDraftPreview')),
+                    ),
                   const SizedBox(height: 12),
                   InputDecorator(
                     decoration: InputDecoration(
@@ -1241,6 +1512,8 @@ class _JobsScreenState extends State<JobsScreen> {
       ),
     );
 
+    reviewScrollController.dispose();
+
     return result;
   }
 
@@ -1282,6 +1555,7 @@ class _JobsScreenState extends State<JobsScreen> {
         if (index == 0) {
           return _SearchHeader(
             keywordController: _keywordController,
+            keywordFocusNode: _keywordFocusNode,
             cityController: _cityController,
             regionController: _regionController,
             countryController: _countryController,
@@ -1297,7 +1571,9 @@ class _JobsScreenState extends State<JobsScreen> {
             selectedQuickFilters: _selectedQuickFilters,
             onQuickFilterToggled: (filter) {
               setState(() {
-                if (_selectedQuickFilters.contains(filter)) {
+                if (filter == 'all') {
+                  _selectedQuickFilters.clear();
+                } else if (_selectedQuickFilters.contains(filter)) {
                   _selectedQuickFilters.remove(filter);
                 } else {
                   _selectedQuickFilters.add(filter);
@@ -1320,6 +1596,13 @@ class _JobsScreenState extends State<JobsScreen> {
           return _JobsEmptyState(
             isSearching: _isSearching,
             selectedQuickFilters: _selectedQuickFilters,
+            onResetFilters: () {
+              setState(() {
+                _selectedQuickFilters.clear();
+                _keywordController.clear();
+              });
+              unawaited(_search());
+            },
           );
         }
 
@@ -1334,12 +1617,25 @@ class _JobsScreenState extends State<JobsScreen> {
         final job = _results[index - resultsOffset];
         return _JobCard(
           job: job,
+          isSaved: _savedJobKeys.contains(_jobKey(job)),
+          onSave: () {
+            final key = _jobKey(job);
+            HapticFeedback.selectionClick();
+            setState(() {
+              if (!_savedJobKeys.add(key)) {
+                _savedJobKeys.remove(key);
+              }
+            });
+            unawaited(_persistSavedJobs());
+          },
           onViewDetails: () => _openJobDetails(job),
           onApply: _isSaving ? null : () => _apply(job),
         );
       },
     );
   }
+
+  String _jobKey(JobSearchResult job) => '${job.company.trim()}|${job.title.trim()}';
 
   Future<void> _openJobDetails(JobSearchResult job) async {
     await Navigator.of(context).push(
@@ -1443,10 +1739,12 @@ class _JobsEmptyState extends StatelessWidget {
   const _JobsEmptyState({
     required this.isSearching,
     required this.selectedQuickFilters,
+    required this.onResetFilters,
   });
 
   final bool isSearching;
   final Set<String> selectedQuickFilters;
+  final VoidCallback onResetFilters;
 
   @override
   Widget build(BuildContext context) {
@@ -1467,14 +1765,14 @@ class _JobsEmptyState extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.md),
             Text(
-              isSearching ? tr(context, 'jobs.searchingVacancies') : tr(context, 'jobs.noResultsYet'),
+              isSearching ? tr(context, 'jobs.searchingVacancies') : tr(context, 'jobs.empty.title'),
               style: Theme.of(context).textTheme.headlineMedium,
             ),
             const SizedBox(height: AppSpacing.xxs),
             Text(
               isSearching
                   ? tr(context, 'jobs.searchingWithFilters')
-                  : tr(context, 'jobs.tryAnotherKeyword'),
+                  : tr(context, 'jobs.empty.subtitle'),
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: AppColors.secondaryText,
                   ),
@@ -1487,12 +1785,20 @@ class _JobsEmptyState extends StatelessWidget {
                 children: selectedQuickFilters
                     .map(
                       (filter) => Chip(
-                        label: Text(filter),
+                        label: Text(_filterLabel(context, filter)),
                         backgroundColor: AppColors.softGreen,
                         side: const BorderSide(color: AppColors.softGreenBorder),
                       ),
                     )
                     .toList(),
+              ),
+            ],
+            if (!isSearching && selectedQuickFilters.isNotEmpty) ...[
+              const SizedBox(height: AppSpacing.md),
+              OutlinedButton.icon(
+                onPressed: onResetFilters,
+                icon: const Icon(Icons.restart_alt_rounded),
+                label: Text(tr(context, 'common.reset')),
               ),
             ],
           ],
@@ -1505,6 +1811,7 @@ class _JobsEmptyState extends StatelessWidget {
 class _SearchHeader extends StatelessWidget {
   const _SearchHeader({
     required this.keywordController,
+    required this.keywordFocusNode,
     required this.cityController,
     required this.regionController,
     required this.countryController,
@@ -1523,6 +1830,7 @@ class _SearchHeader extends StatelessWidget {
   });
 
   final TextEditingController keywordController;
+  final FocusNode keywordFocusNode;
   final TextEditingController cityController;
   final TextEditingController regionController;
   final TextEditingController countryController;
@@ -1539,6 +1847,74 @@ class _SearchHeader extends StatelessWidget {
   final ValueChanged<String> onQuickFilterToggled;
   final ValueChanged<bool> onUseAutoLocationChanged;
 
+  Future<void> _showLocationFilters(BuildContext context) async {
+    var autoLocation = useAutoLocation;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(
+              AppSpacing.md,
+              AppSpacing.md,
+              AppSpacing.md,
+              MediaQuery.of(context).viewInsets.bottom + AppSpacing.md,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(tr(context, 'jobs.filtersTitle'), style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: AppSpacing.xs),
+                Text(
+                  autoLocation
+                      ? (isResolvingLocation
+                          ? tr(context, 'jobs.detectingLocation')
+                          : tr(context, 'jobs.detectWhenEnteringSection'))
+                      : tr(context, 'jobs.configureCityCountryManually'),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.secondaryText),
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(tr(context, 'jobs.useCurrentLocation')),
+                  value: autoLocation,
+                  onChanged: isSaving
+                      ? null
+                      : (value) {
+                          setSheetState(() => autoLocation = value);
+                          onUseAutoLocationChanged(value);
+                        },
+                ),
+                if (!autoLocation) ...[
+                  TextField(controller: cityController, decoration: InputDecoration(labelText: tr(context, 'jobs.cityOptional'))),
+                  const SizedBox(height: AppSpacing.sm),
+                  TextField(controller: regionController, decoration: InputDecoration(labelText: tr(context, 'jobs.regionOptional'))),
+                  const SizedBox(height: AppSpacing.sm),
+                  TextField(controller: countryController, decoration: InputDecoration(labelText: tr(context, 'jobs.countryOptional'))),
+                ],
+                const SizedBox(height: AppSpacing.md),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: isSaving
+                        ? null
+                        : () {
+                            Navigator.of(sheetContext).pop();
+                            onSearch();
+                          },
+                    icon: const Icon(Icons.search_rounded),
+                    label: Text(tr(context, 'nav.search')),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -1547,30 +1923,104 @@ class _SearchHeader extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              tr(context, 'nav.search'),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.titleLarge,
+            Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        tr(context, 'jobs.greeting', args: {
+                          'name': currentUser?.firstName.trim().isNotEmpty == true
+                              ? currentUser!.firstName.trim()
+                              : 'Candidato',
+                        }),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        tr(context, 'jobs.headline'),
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ],
+                  ),
+                ),
+                Stack(
+                  children: [
+                    CircleAvatar(
+                      radius: 23,
+                      backgroundColor: AppColors.softGreen,
+                      child: Text(
+                        currentUser?.firstName.trim().isNotEmpty == true
+                            ? currentUser!.firstName.trim().substring(0, 1).toUpperCase()
+                            : 'J',
+                        style: const TextStyle(
+                          color: AppColors.primaryActive,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Positioned(
+                      right: 0,
+                      bottom: 0,
+                      child: Container(
+                        width: 11,
+                        height: 11,
+                        decoration: BoxDecoration(
+                          color: AppColors.primary,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
             const SizedBox(height: AppSpacing.md),
             TextField(
               controller: keywordController,
+              focusNode: keywordFocusNode,
               textInputAction: TextInputAction.search,
               onSubmitted: isSaving ? null : (_) => onSearch(),
               decoration: InputDecoration(
-                hintText: tr(context, 'jobs.searchJobsHint'),
+                hintText: tr(context, 'jobs.searchPlaceholder'),
                 prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: SizedBox(
+                  width: 96,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      IconButton(
+                        tooltip: tr(context, 'jobs.voiceSearch'),
+                        onPressed: isSaving ? null : keywordFocusNode.requestFocus,
+                        icon: const Icon(Icons.mic_none_rounded),
+                      ),
+                      IconButton(
+                        tooltip: tr(context, 'jobs.searchFilters'),
+                        onPressed: isSaving ? null : () => _showLocationFilters(context),
+                        icon: const Icon(Icons.tune_rounded),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: AppSpacing.sm),
             Wrap(
               spacing: AppSpacing.xs,
               runSpacing: AppSpacing.xs,
-              children: _quickFilterOptions.map((filter) {
+              children: [
+                FilterChip(
+                  label: Text(tr(context, 'jobs.filter.all')),
+                  selected: selectedQuickFilters.isEmpty,
+                  showCheckmark: false,
+                  onSelected: isSaving ? null : (_) => onQuickFilterToggled('all'),
+                ),
+                ..._quickFilterOptions.map((filter) {
                 final isSelected = selectedQuickFilters.contains(filter);
                 return FilterChip(
-                  label: Text(filter),
+                  label: Text(_filterLabel(context, filter)),
                   selected: isSelected,
                   showCheckmark: false,
                   selectedColor: AppColors.primary,
@@ -1584,57 +2034,23 @@ class _SearchHeader extends StatelessWidget {
                   ),
                   onSelected: isSaving ? null : (_) => onQuickFilterToggled(filter),
                 );
-              }).toList(),
+                }),
+              ],
             ),
             if (selectedQuickFilters.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.xs),
               Text(
-                tr(context, 'jobs.activeFilters', args: {'filters': selectedQuickFilters.join(' • ')}),
+                tr(context, 'jobs.activeFilters', args: {'filters': selectedQuickFilters.map((f) => _filterLabel(context, f)).join(' • ')}),
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
                       color: AppColors.primaryActive,
                     ),
               ),
             ],
             const SizedBox(height: AppSpacing.sm),
-            SwitchListTile.adaptive(
-              contentPadding: EdgeInsets.zero,
-              title: Text(tr(context, 'jobs.useCurrentLocation')),
-              subtitle: Text(
-                useAutoLocation
-                    ? (isResolvingLocation
-                        ? tr(context, 'jobs.detectingLocation')
-                        : ((detectedCity ?? '').trim().isNotEmpty ||
-                                (detectedCountry ?? '').trim().isNotEmpty
-                            ? tr(context, 'jobs.searchingIn', args: {'location': [(detectedCity ?? '').trim(), (detectedRegion ?? '').trim(), (detectedCountry ?? '').trim()].where((value) => value.isNotEmpty).join(', ')})
-                            : tr(context, 'jobs.detectWhenEnteringSection')))
-                    : tr(context, 'jobs.configureCityCountryManually'),
-              ),
-              value: useAutoLocation,
-              onChanged: isSaving ? null : onUseAutoLocationChanged,
+            Text(
+              tr(context, 'jobs.recommended'),
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-            if (!useAutoLocation) ...[
-              const SizedBox(height: AppSpacing.xs),
-              TextField(
-                controller: cityController,
-                decoration: InputDecoration(
-                  labelText: tr(context, 'jobs.cityOptional'),
-                ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              TextField(
-                controller: regionController,
-                decoration: InputDecoration(
-                  labelText: tr(context, 'jobs.regionOptional'),
-                ),
-              ),
-              const SizedBox(height: AppSpacing.sm),
-              TextField(
-                controller: countryController,
-                decoration: InputDecoration(
-                  labelText: tr(context, 'jobs.countryOptional'),
-                ),
-              ),
-            ],
             const SizedBox(height: AppSpacing.md),
             FilledButton.icon(
               onPressed: isSaving ? null : () => onSearch(),
@@ -1656,11 +2072,15 @@ class _SearchHeader extends StatelessWidget {
 class _JobCard extends StatelessWidget {
   const _JobCard({
     required this.job,
+    required this.isSaved,
+    required this.onSave,
     required this.onViewDetails,
     required this.onApply,
   });
 
   final JobSearchResult job;
+  final bool isSaved;
+  final VoidCallback onSave;
   final VoidCallback onViewDetails;
   final VoidCallback? onApply;
 
@@ -1690,9 +2110,31 @@ class _JobCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          job.company,
-                          style: Theme.of(context).textTheme.labelSmall,
+                        Row(
+                          children: [
+                            CircleAvatar(
+                              radius: 20,
+                              backgroundColor: AppColors.softGreen,
+                              child: Text(
+                                job.company.trim().isEmpty
+                                    ? '?'
+                                    : job.company.trim().characters.first.toUpperCase(),
+                                style: const TextStyle(
+                                  color: AppColors.primaryActive,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Text(
+                                job.company,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.labelSmall,
+                              ),
+                            ),
+                          ],
                         ),
                         const SizedBox(height: 6),
                         Text(
@@ -1722,10 +2164,10 @@ class _JobCard extends StatelessWidget {
                     ),
                   ),
                   IconButton(
-                    onPressed: onApply,
-                    icon: const Icon(Icons.bookmark_add_outlined),
+                    onPressed: onSave,
+                    icon: Icon(isSaved ? Icons.bookmark_rounded : Icons.bookmark_border_rounded),
                     color: AppColors.primaryActive,
-                    tooltip: tr(context, 'jobs.saveVacancy'),
+                    tooltip: isSaved ? tr(context, 'jobs.savedVacancy') : tr(context, 'jobs.saveVacancy'),
                   ),
                 ],
               ),
@@ -1735,7 +2177,7 @@ class _JobCard extends StatelessWidget {
                 runSpacing: AppSpacing.xs,
                 children: [
                   _JobMetaChip(label: job.location, icon: Icons.place_outlined),
-                  _JobMetaChip(label: tr(context, 'jobs.activeVacancy'), icon: Icons.bolt_outlined),
+                  _JobMetaChip(label: tr(context, 'jobs.recommended'), icon: Icons.auto_awesome_outlined),
                 ],
               ),
               const SizedBox(height: AppSpacing.md),

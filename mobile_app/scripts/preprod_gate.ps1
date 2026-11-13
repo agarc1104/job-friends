@@ -5,7 +5,6 @@ param(
     [string]$SupabaseAnonKey = "",
     [string]$ApiBaseUrl = "http://10.0.2.2:8000",
     [switch]$RunReleaseBuild,
-    [string]$AdmobAndroidBannerId = "",
     [string]$AdmobAndroidInterstitialId = "",
     [switch]$SkipManualRun,
     [switch]$AllowSmokeFallback,
@@ -88,10 +87,6 @@ if ($RunReleaseBuild) {
         SupabaseAnonKey = $SupabaseAnonKey
         MobileApiBaseUrl = $ApiBaseUrl
         AppEnv = "qa"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($AdmobAndroidBannerId)) {
-        $buildParams.AdmobAndroidBannerId = $AdmobAndroidBannerId
     }
 
     if (-not [string]::IsNullOrWhiteSpace($AdmobAndroidInterstitialId)) {
